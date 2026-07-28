@@ -1,0 +1,3 @@
+// moongql (<- strawberry-graphql). v0 = the code-first schema: build object types
+// and fields programmatically, then emit GraphQL SDL. Pure logic, no deps; the
+// query parser / executor / introspection are sequenced after.
