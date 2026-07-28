@@ -47,3 +47,68 @@ test "custom root query name" {
   assert_eq(contains(s.to_sdl(), "query: RootQuery"), true)
   assert_eq(contains(s.to_sdl(), "ping: Boolean!"), true)
 }
+
+///|
+test "field arguments render as name(a: T, b: T): RetType" {
+  let s = Schema::new()
+  let q = s.object("Query")
+  q.field_args(
+    "user",
+    [("id", NonNull(Scalar("ID"))), ("verbose", Scalar("Boolean"))],
+    Named("User"),
+  )
+  let sdl = s.to_sdl()
+  assert_eq(contains(sdl, "user(id: ID!, verbose: Boolean): User"), true)
+}
+
+///|
+test "input object type renders as input Name { .. }" {
+  let s = Schema::new()
+  let inp = s.input("UserInput")
+  inp.field("name", NonNull(Scalar("String")))
+  inp.field("age", Scalar("Int"))
+  let sdl = s.to_sdl()
+  assert_eq(contains(sdl, "input UserInput {"), true)
+  assert_eq(contains(sdl, "name: String!"), true)
+  assert_eq(contains(sdl, "age: Int"), true)
+}
+
+///|
+test "enum type renders as enum Name { A B }" {
+  let s = Schema::new()
+  s.enum_("Color", ["RED", "GREEN", "BLUE"])
+  let sdl = s.to_sdl()
+  assert_eq(contains(sdl, "enum Color {"), true)
+  assert_eq(contains(sdl, "RED"), true)
+  assert_eq(contains(sdl, "GREEN"), true)
+  assert_eq(contains(sdl, "BLUE"), true)
+}
+
+///|
+test "interface type and object implements" {
+  let s = Schema::new()
+  let node = s.interface("Node")
+  node.field("id", NonNull(Scalar("ID")))
+  let user = s.object("User")
+  user.implements("Node")
+  user.field("id", NonNull(Scalar("ID")))
+  user.field("name", NonNull(Scalar("String")))
+  let sdl = s.to_sdl()
+  assert_eq(contains(sdl, "interface Node {"), true)
+  assert_eq(contains(sdl, "type User implements Node {"), true)
+}
+
+///|
+test "object implementing multiple interfaces joins with &" {
+  let s = Schema::new()
+  let _ = s.interface("Node")
+  let _ = s.interface("Timestamped")
+  let e = s.object("Event")
+  e.implements("Node")
+  e.implements("Timestamped")
+  e.field("id", NonNull(Scalar("ID")))
+  assert_eq(
+    contains(s.to_sdl(), "type Event implements Node & Timestamped {"),
+    true,
+  )
+}

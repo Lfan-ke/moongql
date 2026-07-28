@@ -52,7 +52,32 @@ Verified across all backends (`wasm`, `wasm-gc`, `js`, `native`) in CI, 0 warnin
 
 ## Roadmap (transliterating strawberry)
 
-The code-first schema and SDL are here. Next, feature-by-feature: field arguments and input types, enums / interfaces / unions; a GraphQL query parser and validator; an executor with resolvers over the moonasgi SEAM (served by `mooncat`); introspection and a GraphiQL endpoint; then subscriptions and dataloaders.
+The code-first schema and SDL are here, now with **field arguments** (`field_args`), **input object types** (`Schema::input`), **enum types** (`Schema::enum_`), and **interfaces** (`Schema::interface` + object `implements`). Next, feature-by-feature: unions; a GraphQL query parser and validator; an executor with resolvers over the moonasgi SEAM (served by `mooncat`); introspection and a GraphiQL endpoint; then subscriptions and dataloaders.
+
+```moonbit
+let s = @moongql.Schema::new()
+
+let node = s.interface("Node")
+node.field("id", @moongql.NonNull(@moongql.Scalar("ID")))
+
+let q = s.object("Query")
+q.field_args(
+  "user",
+  [("id", @moongql.NonNull(@moongql.Scalar("ID")))],
+  @moongql.Named("User"),
+)
+
+let u = s.object("User")
+u.implements("Node")
+u.field("id", @moongql.NonNull(@moongql.Scalar("ID")))
+
+let inp = s.input("UserFilter")
+inp.field("name", @moongql.Scalar("String"))
+
+s.enum_("Role", ["ADMIN", "USER"])
+```
+
+emits `user(id: ID!): User`, `type User implements Node { .. }`, `input UserFilter { .. }`, and `enum Role { ADMIN USER }`.
 
 ## License
 
