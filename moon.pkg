@@ -5,4 +5,6 @@
 // core/strconv.
 import {
   "moonbitlang/core/json",
+  "moonbitlang/core/encoding/utf8",
+  "Lfan-ke/moonasgi",
 }

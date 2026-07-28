@@ -95,7 +95,7 @@ let res = @moongql.execute(s, r,
 
 MoonBit has no runtime reflection, so where strawberry discovers resolvers and schema from Python classes, `moongql` uses **explicit** values: resolvers are functions registered by `"Type.field"` (like Rust/Go GraphQL servers), and a field's declared return type drives leaf-vs-composite completion exactly as `graphql-core`'s `complete_value` does. Fields with no registered resolver read their value off the parent JSON object — the equivalent of `graphql-core`'s `default_field_resolver`.
 
-Union types, custom scalars, subscriptions, and a DataLoader all land too (below). What's still ahead: a GraphiQL endpoint over the moonasgi SEAM (served by `mooncat`) and Federation.
+Union types, custom scalars, subscriptions, a DataLoader, a GraphiQL HTTP endpoint, and Apollo Federation all land too (below).
 
 ```moonbit
 let s = @moongql.Schema::new()
@@ -174,6 +174,47 @@ loader.get(1)                                   // Some("author#1")
 ```
 
 `prime`, `clear`, `clear_all`, `load_many` and `load_now` round out the API. Where Facebook's DataLoader coalesces within an event-loop tick, this drains the queue explicitly so it stays testable without a runtime.
+
+## HTTP endpoint
+
+`graphql_handler` wires a schema and its resolvers onto the [moonasgi](https://mooncakes.io/docs/Lfan-ke/moonasgi) seam, so moongql serves over `mooncat` (or any server that binds the ASGI callable). A `GET` returns the GraphiQL IDE; a `POST` reads a `{ query, variables, operationName }` body, runs it, and replies with the `{ data, errors }` JSON:
+
+```moonbit
+let handler = @moongql.graphql_handler(schema, resolvers)      // path defaults to /graphql
+let app = @moongql.graphql_app(schema, resolvers)              // the same, lifted onto an AsgiApp
+```
+
+`graphql_app` is what a server mounts. The request/response logic is shared with `graphql_handler`, which moonasgi's `TestClient` drives without a socket — so the endpoint is tested on every backend:
+
+```moonbit
+let client = @moonasgi.TestClient::new(@moongql.graphql_handler(schema, resolvers))
+let body = @utf8.encode(
+  "{\"query\":\"{ user(id: \\\"1\\\") { name } }\"}",
+)
+let resp = client.post("/graphql", body~)
+// resp.status == 200, resp.text() == {"data":{"user":{"name":"Alice"}}}
+```
+
+## Apollo Federation
+
+A subgraph exposes `_service { sdl }` (its SDL, annotated with the federation directives), the `_entities(representations:)` resolver that turns a `{ __typename, <key> }` reference back into a full object, and `@key` / `@extends` / `@external` markers. Register the entity types and their reference resolvers, then `apply` installs the machinery — the `_Service` type, the `_Any` scalar, the `_Entity` union, and the two root fields — so the ordinary executor answers a federated query:
+
+```moonbit
+let fed = @moongql.Federation::new()
+fed.entity(name="User", key="id", resolve=(rep, _ctx) => {
+  let id = match rep {
+    Object(m) => match m.get("id") { Some(String(s)) => s; _ => "" }
+    _ => ""
+  }
+  { "id": id, "name": "User#" + id }.to_json()  // materialise from the key
+})
+fed.apply(schema, resolvers)
+
+// { _service { sdl } } -> the subgraph SDL with `type User @key(fields: "id")`
+// _entities(representations: [{ __typename: "User", id: "7" }]) -> the User object
+```
+
+An extended type declares `extends=true` and lists its `external` fields, which render as `extend type ... @key(...)` with `@external` on the borrowed fields — the shape a gateway composes.
 
 ## License
 

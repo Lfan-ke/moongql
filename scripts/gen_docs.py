@@ -47,6 +47,16 @@ SECTIONS = [
      "pass are queued and deduped, then one dispatch runs the batch function over "
      "the distinct keys and fills a per-loader cache. Includes prime, clear and "
      "load_many/load_now."),
+    ("server", "server.mbt", "HTTP Endpoint",
+     "graphql_handler / graphql_app wire a schema onto the moonasgi seam: GET "
+     "serves the GraphiQL IDE, POST reads a { query, variables, operationName } "
+     "body and returns { data, errors }. Plugs into mooncat and runs on every "
+     "backend through moonasgi's TestClient."),
+    ("federation", "federation.mbt", "Apollo Federation",
+     "Federation v1 subgraph support: register @key entities and their reference "
+     "resolvers, then apply installs _service { sdl }, the _Any scalar, the "
+     "_Entity union and the _entities(representations) resolver so a gateway can "
+     "compose and resolve the subgraph."),
 ]
 
 KIND = {"struct": "struct", "enum": "enum", "fn": "fn", "type": "type", "let": "let"}
