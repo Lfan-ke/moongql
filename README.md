@@ -95,7 +95,7 @@ let res = @moongql.execute(s, r,
 
 MoonBit has no runtime reflection, so where strawberry discovers resolvers and schema from Python classes, `moongql` uses **explicit** values: resolvers are functions registered by `"Type.field"` (like Rust/Go GraphQL servers), and a field's declared return type drives leaf-vs-composite completion exactly as `graphql-core`'s `complete_value` does. Fields with no registered resolver read their value off the parent JSON object — the equivalent of `graphql-core`'s `default_field_resolver`.
 
-Still feature-by-feature ahead: custom scalars and unions, a GraphiQL endpoint over the moonasgi SEAM (served by `mooncat`), DataLoader batching, and subscriptions.
+Union types, custom scalars, subscriptions, and a DataLoader all land too (below). What's still ahead: a GraphiQL endpoint over the moonasgi SEAM (served by `mooncat`) and Federation.
 
 ```moonbit
 let s = @moongql.Schema::new()
@@ -121,6 +121,59 @@ s.enum_("Role", ["ADMIN", "USER"])
 ```
 
 emits `user(id: ID!): User`, `type User implements Node { .. }`, `input UserFilter { .. }`, and `enum Role { ADMIN USER }`.
+
+## Unions and custom scalars
+
+Declare a union with `Schema::union` and select into it through inline fragments; each value is discriminated by its `__typename`:
+
+```moonbit
+s.union("SearchResult", ["Book", "Author"])
+// { search { __typename ... on Book { title } ... on Author { name } } }
+```
+
+A custom scalar carries its own `serialize` (output) and `parse_value` (input) hooks, the same two coercions strawberry's `Scalar` defines. Input arguments and variables run through `parse_value` before a resolver sees them; resolver results run through `serialize`:
+
+```moonbit
+s.scalar("DateTime",
+  serialize=fn(j) { j },      // value -> output JSON
+  parse_value=fn(j) { j })    // input JSON -> value
+```
+
+Both show up in SDL (`union SearchResult = Book | Author`, `scalar DateTime`) and in introspection (`kind: UNION` with `possibleTypes`, `kind: SCALAR`).
+
+## Subscriptions
+
+A subscription has one root field backed by a source stream. `execute_subscription` returns the ordered payloads a client would receive, one `{ data, errors }` per event. The stream is a pull source — a resolver returning `Array[Json]` — so the whole pipeline runs on every backend; the async native variant over a WebSocket wraps the same per-event core.
+
+```moonbit
+let subs = @moongql.Subscribers::new()
+subs.field("Subscription", "messageAdded", fn(info) {
+  // one Json payload per event, in delivery order
+  [msg1, msg2, msg3]
+})
+
+let payloads = @moongql.execute_subscription(schema, resolvers, subs,
+  "subscription { messageAdded(channel: \"general\") { id body } }")
+// payloads[0].stringify() == {"data":{"messageAdded":{"id":"1","body":"hello"}}}
+```
+
+The single-root-field rule (spec §5.2.3.1) is enforced, and an introspection field can't be a subscription root.
+
+## DataLoader
+
+`DataLoader` is the batch-and-cache tool for the N+1 problem. Keys requested during a resolution pass are queued and deduped; one `dispatch` runs the batch function once over the distinct keys:
+
+```moonbit
+let loader : @moongql.DataLoader[Int, String] = @moongql.DataLoader::new(
+  fn(ids) { load_authors(ids) },  // called once per pass
+  fn(id) { id.to_string() },      // cache-key function
+)
+loader.load(1); loader.load(2); loader.load(1)  // three requests, two keys
+loader.dispatch()                               // one batch call for {1, 2}
+loader.get(1)                                   // Some("author#1")
+```
+
+`prime`, `clear`, `clear_all`, `load_many` and `load_now` round out the API. Where Facebook's DataLoader coalesces within an event-loop tick, this drains the queue explicitly so it stays testable without a runtime.
 
 ## License
 

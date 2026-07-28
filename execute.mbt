@@ -169,6 +169,7 @@ fn is_builtin_scalar(name : String) -> Bool {
 fn Exec::is_leaf_type(self : Exec, name : String) -> Bool {
   is_builtin_scalar(name) ||
   self.schema.enum_by_name(name) is Some(_) ||
+  self.schema.scalar_by_name(name) is Some(_) ||
   name == "__TypeKind" ||
   name == "__DirectiveLocation"
 }
@@ -216,6 +217,48 @@ fn Exec::coerce_args(self : Exec, field : QueryField) -> Map[String, Json] {
 }
 
 ///|
+/// Run a custom scalar's `parse_value` hook over an input value, descending
+/// through non-null and list wrappers so `[DateTime!]` parses element-wise. A
+/// value at a built-in scalar or non-scalar position is returned unchanged.
+fn Exec::coerce_input(self : Exec, value : Json, typ : GqlType) -> Json {
+  match typ {
+    NonNull(inner) => self.coerce_input(value, inner)
+    ListOf(inner) =>
+      match value {
+        Array(items) => {
+          let out : Array[Json] = []
+          for it in items {
+            out.push(self.coerce_input(it, inner))
+          }
+          out.to_json()
+        }
+        _ => value
+      }
+    Scalar(n) | Named(n) =>
+      match self.schema.scalar_by_name(n) {
+        Some(sc) => if value is Null { value } else { (sc.parse_value)(value) }
+        None => value
+      }
+  }
+}
+
+///|
+/// Apply custom-scalar input coercion to each declared argument of `fdef` that
+/// carries a value, so a resolver reading `info.arg(..)` sees parsed input.
+fn Exec::apply_input_scalars(
+  self : Exec,
+  args : Map[String, Json],
+  fdef : Field,
+) -> Unit {
+  for da in fdef.args {
+    match args.get(da.0) {
+      Some(v) => args[da.0] = self.coerce_input(v, da.1)
+      None => ()
+    }
+  }
+}
+
+///|
 /// Evaluate the `if:` argument of a `@skip`/`@include` directive (default false).
 fn Exec::directive_if(self : Exec, d : Directive) -> Bool {
   for a in d.arguments {
@@ -247,13 +290,19 @@ fn Exec::should_include(self : Exec, directives : Array[Directive]) -> Bool {
 /// Whether a fragment's type condition `cond` applies to an object of type
 /// `obj`: the condition names the object itself or an interface it implements.
 fn Exec::fragment_applies(self : Exec, cond : String, obj : ObjectType) -> Bool {
-  ignore(self)
   if cond == obj.name {
     return true
   }
   for iface in obj.interfaces {
     if iface == cond {
       return true
+    }
+  }
+  if self.schema.union_by_name(cond) is Some(u) {
+    for m in u.members {
+      if m == obj.name {
+        return true
+      }
     }
   }
   false
@@ -369,6 +418,10 @@ fn Exec::resolve_raw(
     return obj.name.to_json()
   }
   let args = self.coerce_args(field)
+  match obj.field_by_name(name) {
+    Some(fdef) => self.apply_input_scalars(args, fdef)
+    None => ()
+  }
   match self.resolvers.map.get(obj.name + "." + name) {
     Some(resolver) => {
       let info = { parent, args, ctx: self.ctx, field_name: name }
@@ -428,6 +481,65 @@ fn Exec::concrete_type(
 }
 
 ///|
+/// Serialise a leaf value through a custom scalar's `serialize` hook, or return
+/// it unchanged for a built-in scalar or enum.
+fn Exec::serialize_leaf(self : Exec, name : String, value : Json) -> Json {
+  match self.schema.scalar_by_name(name) {
+    Some(sc) => (sc.serialize)(value)
+    None => value
+  }
+}
+
+///|
+/// Resolve the concrete member type for a value at a union position: read its
+/// `__typename`, check that name is one of the union's members, and return that
+/// object type. A missing or non-member `__typename` is a field error.
+fn Exec::union_member(
+  self : Exec,
+  u : UnionType,
+  value : Json,
+  path : Array[Json],
+) -> ObjectType? {
+  let tn = match value {
+    Object(m) =>
+      match m.get("__typename") {
+        Some(String(s)) => s
+        _ => ""
+      }
+    _ => ""
+  }
+  if tn == "" {
+    self.add_error(
+      "Cannot resolve concrete type for union '" +
+      u.name +
+      "': value has no __typename",
+      path,
+    )
+    return None
+  }
+  let mut is_member = false
+  for m in u.members {
+    if m == tn {
+      is_member = true
+    }
+  }
+  if not(is_member) {
+    self.add_error(
+      "Type '" + tn + "' is not a member of union '" + u.name + "'",
+      path,
+    )
+    return None
+  }
+  match self.schema.type_by_name(tn) {
+    Some(t) => Some(t)
+    None => {
+      self.add_error("Union member type '" + tn + "' is not defined", path)
+      None
+    }
+  }
+}
+
+///|
 /// The merged sub-selection sets of all fields grouped under one response key.
 fn merge_subselections(fields : Array[QueryField]) -> Array[Selection] {
   let out : Array[Selection] = []
@@ -478,27 +590,40 @@ fn Exec::complete(
           Json::null()
         }
       }
-    Scalar(_) => value
+    Scalar(name) => self.serialize_leaf(name, value)
     Named(name) =>
       if self.is_leaf_type(name) {
-        value
+        self.serialize_leaf(name, value)
       } else {
         match value {
           Null => Json::null()
           _ =>
-            match self.output_type(name) {
-              Some(decl) => {
-                let obj = self.concrete_type(decl, value)
-                self.execute_selection_set(
-                  obj,
-                  merge_subselections(fields),
-                  value,
-                  path,
-                )
+            if self.schema.union_by_name(name) is Some(u) {
+              match self.union_member(u, value, path) {
+                Some(obj) =>
+                  self.execute_selection_set(
+                    obj,
+                    merge_subselections(fields),
+                    value,
+                    path,
+                  )
+                None => Json::null()
               }
-              None => {
-                self.add_error("Unknown output type '" + name + "'", path)
-                Json::null()
+            } else {
+              match self.output_type(name) {
+                Some(decl) => {
+                  let obj = self.concrete_type(decl, value)
+                  self.execute_selection_set(
+                    obj,
+                    merge_subselections(fields),
+                    value,
+                    path,
+                  )
+                }
+                None => {
+                  self.add_error("Unknown output type '" + name + "'", path)
+                  Json::null()
+                }
               }
             }
         }
@@ -715,6 +840,32 @@ fn build_response(data : Json?, errors : Array[GqlError]) -> Json {
 }
 
 ///|
+/// Build a fresh per-request executor state with an empty error list.
+fn Exec::state(
+  schema : Schema,
+  resolvers : Resolvers,
+  fragments : Map[String, FragmentDefinition],
+  variables : Map[String, Json],
+  ctx : Json,
+) -> Exec {
+  { schema, resolvers, fragments, variables, ctx, errors: [] }
+}
+
+///|
+/// Execute a top-level selection set against `root_type`, absorbing a `NullBubble`
+/// that reaches the root into a null `data`.
+fn Exec::run_root(
+  self : Exec,
+  root_type : ObjectType,
+  selections : Array[Selection],
+  root_value : Json,
+) -> Json {
+  self.execute_selection_set(root_type, selections, root_value, []) catch {
+    NullBubble => Json::null()
+  }
+}
+
+///|
 /// Execute a GraphQL request end to end: parse `query`, validate it against
 /// `schema`, select the operation, coerce variables, then walk the selection
 /// set with `resolvers` — returning the `{ data, errors }` response as JSON.
@@ -749,14 +900,7 @@ pub fn execute(
   }
   let fragments = collect_fragments(doc)
   let vars = coerce_variables(prepared.operation, variables, fragments)
-  let exec = {
-    schema,
-    resolvers,
-    fragments,
-    variables: vars,
-    ctx: context,
-    errors: [],
-  }
+  let exec = Exec::state(schema, resolvers, fragments, vars, context)
   let root_type = match schema.type_by_name(prepared.root_type) {
     Some(t) => t
     None =>
@@ -764,13 +908,10 @@ pub fn execute(
         GqlError::msg("Root type '" + prepared.root_type + "' is not defined"),
       ])
   }
-  let data = exec.execute_selection_set(
+  let data = exec.run_root(
     root_type,
     prepared.operation.selection_set,
     root_value,
-    [],
-  ) catch {
-    NullBubble => Json::null()
-  }
+  )
   build_response(Some(data), exec.errors)
 }

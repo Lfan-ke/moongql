@@ -29,6 +29,7 @@ fn Validator::lookup_type(self : Validator, name : String) -> ObjectType? {
 fn Validator::is_leaf(self : Validator, name : String) -> Bool {
   is_builtin_scalar(name) ||
   self.schema.enum_by_name(name) is Some(_) ||
+  self.schema.scalar_by_name(name) is Some(_) ||
   name == "__TypeKind" ||
   name == "__DirectiveLocation"
 }
@@ -155,6 +156,13 @@ fn Validator::check_selection_set(
   selections : Array[Selection],
   defined : Array[String]?,
 ) -> Unit {
+  match self.schema.union_by_name(type_name) {
+    Some(u) => {
+      self.check_union_selection_set(type_name, u, selections, defined)
+      return
+    }
+    None => ()
+  }
   let obj = match self.lookup_type(type_name) {
     Some(o) => o
     None => {
@@ -205,6 +213,23 @@ fn Validator::check_selection_set(
                   "' must not have a selection set",
                 )
               }
+            } else if self.schema.union_by_name(base) is Some(u) {
+              if f.selection_set.length() == 0 {
+                self.err(
+                  "Field '" +
+                  f.name +
+                  "' of union type '" +
+                  base +
+                  "' must have a selection of subfields",
+                )
+              } else {
+                self.check_union_selection_set(
+                  base,
+                  u,
+                  f.selection_set,
+                  defined,
+                )
+              }
             } else if self.lookup_type(base) is Some(_) {
               if f.selection_set.length() == 0 {
                 self.err(
@@ -235,7 +260,7 @@ fn Validator::check_selection_set(
           Some(c) => c
           None => type_name
         }
-        if self.lookup_type(cond_type) is Some(_) {
+        if self.type_exists(cond_type) {
           self.check_selection_set(cond_type, sels, defined)
         } else {
           self.err("Inline fragment on unknown type '" + cond_type + "'")
@@ -243,6 +268,73 @@ fn Validator::check_selection_set(
       }
     }
   }
+}
+
+///|
+/// Validate a selection set at a union position: only `__typename` and fragments
+/// on member types (or the union itself) may select into a union. A direct field
+/// selection other than `__typename` is an error.
+fn Validator::check_union_selection_set(
+  self : Validator,
+  union_name : String,
+  u : UnionType,
+  selections : Array[Selection],
+  defined : Array[String]?,
+) -> Unit {
+  for sel in selections {
+    match sel {
+      FieldSel(f) => {
+        self.check_directives(f.directives, defined)
+        if f.name == "__typename" {
+          if f.selection_set.length() > 0 {
+            self.err("Field '__typename' must not have a selection set")
+          }
+        } else {
+          self.err(
+            "Cannot query field '" +
+            f.name +
+            "' directly on union type '" +
+            union_name +
+            "'; select it inside an inline fragment on a member type",
+          )
+        }
+      }
+      FragmentSpreadSel(name, dirs) => {
+        self.check_directives(dirs, defined)
+        if not(self.fragments.contains(name)) {
+          self.err("Unknown fragment '" + name + "'")
+        }
+      }
+      InlineFragmentSel(cond, dirs, sels) => {
+        self.check_directives(dirs, defined)
+        let cond_type = match cond {
+          Some(c) => c
+          None => union_name
+        }
+        if cond_type == union_name {
+          self.check_union_selection_set(union_name, u, sels, defined)
+        } else if str_in(u.members, cond_type) {
+          self.check_selection_set(cond_type, sels, defined)
+        } else {
+          self.err(
+            "Inline fragment type '" +
+            cond_type +
+            "' is not a member of union '" +
+            union_name +
+            "'",
+          )
+        }
+      }
+    }
+  }
+}
+
+///|
+/// Whether a name denotes a selectable type: a composite/introspection type or a
+/// union. Used to accept union type conditions on fragments.
+fn Validator::type_exists(self : Validator, name : String) -> Bool {
+  self.lookup_type(name) is Some(_) ||
+  self.schema.union_by_name(name) is Some(_)
 }
 
 ///|
@@ -271,6 +363,7 @@ fn Validator::check_operation(
     let base = typeref_base(vd.typ)
     let ok = is_builtin_scalar(base) ||
       self.schema.enum_by_name(base) is Some(_) ||
+      self.schema.scalar_by_name(base) is Some(_) ||
       (match self.schema.type_by_name(base) {
         Some(t) => t.kind is (Input | Object | Interface)
         None => false
@@ -281,7 +374,67 @@ fn Validator::check_operation(
       )
     }
   }
+  if op.operation is Subscription {
+    self.check_single_root_field(op)
+  }
   self.check_selection_set(root_type, op.selection_set, Some(defined))
+}
+
+///|
+/// SingleRootField (spec §5.2.3.1): a subscription must select exactly one root
+/// field after fragment expansion, and it must not be an introspection field.
+fn Validator::check_single_root_field(
+  self : Validator,
+  op : OperationDefinition,
+) -> Unit {
+  let fields : Array[QueryField] = []
+  self.collect_root_fields(op.selection_set, Map([]), fields)
+  let keys : Array[String] = []
+  for f in fields {
+    let key = match f.alias_ {
+      Some(a) => a
+      None => f.name
+    }
+    if not(str_in(keys, key)) {
+      keys.push(key)
+    }
+  }
+  if keys.length() != 1 {
+    self.err("Subscription operation must select exactly one root field")
+  } else if is_meta_field(fields[0].name) {
+    self.err(
+      "Subscription root field '" +
+      fields[0].name +
+      "' must not be an introspection field",
+    )
+  }
+}
+
+///|
+/// Gather the root-level fields of a selection set, expanding fragment spreads
+/// and inline fragments (used to count a subscription's root fields).
+fn Validator::collect_root_fields(
+  self : Validator,
+  selections : Array[Selection],
+  visited : Map[String, Bool],
+  out : Array[QueryField],
+) -> Unit {
+  for sel in selections {
+    match sel {
+      FieldSel(f) => out.push(f)
+      FragmentSpreadSel(name, _) =>
+        if not(visited.get(name) is Some(true)) {
+          visited[name] = true
+          match self.fragments.get(name) {
+            Some(frag) =>
+              self.collect_root_fields(frag.selection_set, visited, out)
+            None => ()
+          }
+        }
+      InlineFragmentSel(_, _, sels) =>
+        self.collect_root_fields(sels, visited, out)
+    }
+  }
 }
 
 ///|
@@ -293,7 +446,7 @@ fn Validator::check_fragment(
   frag : FragmentDefinition,
 ) -> Unit {
   self.check_directives(frag.directives, None)
-  if self.lookup_type(frag.type_condition) is Some(_) {
+  if self.type_exists(frag.type_condition) {
     self.check_selection_set(frag.type_condition, frag.selection_set, None)
   } else {
     self.err(

@@ -107,6 +107,8 @@ fn Exec::type_kind(self : Exec, name : String) -> String {
     None =>
       if self.schema.enum_by_name(name) is Some(_) {
         "ENUM"
+      } else if self.schema.union_by_name(name) is Some(_) {
+        "UNION"
       } else {
         "SCALAR"
       }
@@ -279,7 +281,28 @@ fn Exec::enum_type_json(self : Exec, def : EnumType) -> Json {
 }
 
 ///|
-/// Materialise the full `__Type` for a built-in scalar.
+/// Materialise the full `__Type` for a union type: `kind = UNION` and
+/// `possibleTypes` listing its members as type references.
+fn Exec::union_type_json(self : Exec, def : UnionType) -> Json {
+  let members : Array[Json] = []
+  for m in def.members {
+    members.push(self.named_type_ref(m))
+  }
+  jobj([
+    ("kind", "UNION".to_json()),
+    ("name", def.name.to_json()),
+    ("description", Json::null()),
+    ("fields", Json::null()),
+    ("interfaces", Json::null()),
+    ("possibleTypes", members.to_json()),
+    ("enumValues", Json::null()),
+    ("inputFields", Json::null()),
+    ("ofType", Json::null()),
+  ])
+}
+
+///|
+/// Materialise the full `__Type` for a built-in or custom scalar.
 fn scalar_type_json(name : String) -> Json {
   jobj([
     ("kind", "SCALAR".to_json()),
@@ -305,7 +328,11 @@ fn Exec::introspection_type_by_name(self : Exec, name : String) -> Json {
     Some(def) => return self.enum_type_json(def)
     None => ()
   }
-  if is_builtin_scalar(name) {
+  match self.schema.union_by_name(name) {
+    Some(def) => return self.union_type_json(def)
+    None => ()
+  }
+  if is_builtin_scalar(name) || self.schema.scalar_by_name(name) is Some(_) {
     return scalar_type_json(name)
   }
   Json::null()
@@ -361,8 +388,14 @@ fn Exec::introspection_schema(self : Exec) -> Json {
   for e in self.schema.enums {
     types.push(self.enum_type_json(e))
   }
+  for u in self.schema.unions {
+    types.push(self.union_type_json(u))
+  }
   for s in ["String", "Int", "Float", "Boolean", "ID"] {
     types.push(scalar_type_json(s))
+  }
+  for sc in self.schema.scalars {
+    types.push(scalar_type_json(sc.name))
   }
   let mutation = match self.schema.mutation {
     Some(m) => self.named_type_ref(m)

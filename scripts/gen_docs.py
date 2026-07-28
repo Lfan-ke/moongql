@@ -37,6 +37,16 @@ SECTIONS = [
      "type system materialised as JSON that the executor walks like any object, "
      "with ofType wrapper chains, fields, interfaces, possibleTypes and enum "
      "values."),
+    ("subscribe", "subscribe.mbt", "Subscriptions",
+     "execute_subscription runs a single-root-field subscription against a source "
+     "stream (a pull source returning Array[Json]) and returns the ordered "
+     "{ data, errors } payloads a client receives — the sync core the async "
+     "WebSocket variant wraps."),
+    ("dataloader", "dataloader.mbt", "DataLoader",
+     "Batch-and-cache loader for the N+1 problem: keys requested in a resolution "
+     "pass are queued and deduped, then one dispatch runs the batch function over "
+     "the distinct keys and fills a per-loader cache. Includes prime, clear and "
+     "load_many/load_now."),
 ]
 
 KIND = {"struct": "struct", "enum": "enum", "fn": "fn", "type": "type", "let": "let"}

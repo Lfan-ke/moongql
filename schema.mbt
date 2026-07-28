@@ -104,6 +104,27 @@ pub(all) struct EnumType {
 }
 
 ///|
+/// A GraphQL union type: a name and the ordered names of its member object types.
+/// A value at a union position is resolved to one member via its `__typename`,
+/// and only inline/named fragments on member types (plus `__typename`) may select
+/// into it.
+pub(all) struct UnionType {
+  name : String
+  members : Array[String]
+}
+
+///|
+/// A custom scalar type with the two coercion hooks strawberry's `Scalar` carries:
+/// `serialize` maps a resolved value to its output JSON, and `parse_value` maps an
+/// input JSON value (an argument or variable) to the value a resolver sees. Both
+/// default to identity when a scalar only renames an existing representation.
+pub(all) struct ScalarType {
+  name : String
+  serialize : (Json) -> Json
+  parse_value : (Json) -> Json
+}
+
+///|
 /// A code-first GraphQL schema: composite types (objects, inputs, interfaces),
 /// enum types, plus the names of the root operation types. `query` is required;
 /// `mutation` and `subscription` are optional (a schema without them cannot run
@@ -111,6 +132,8 @@ pub(all) struct EnumType {
 pub struct Schema {
   types : Array[ObjectType]
   enums : Array[EnumType]
+  unions : Array[UnionType]
+  scalars : Array[ScalarType]
   query : String
   mut mutation : String?
   mut subscription : String?
@@ -121,7 +144,15 @@ pub struct Schema {
 /// with no mutation or subscription root until `set_mutation` / `set_subscription`
 /// name them.
 pub fn Schema::new(query? : String = "Query") -> Schema {
-  { types: [], enums: [], query, mutation: None, subscription: None }
+  {
+    types: [],
+    enums: [],
+    unions: [],
+    scalars: [],
+    query,
+    mutation: None,
+    subscription: None,
+  }
 }
 
 ///|
@@ -153,6 +184,52 @@ pub fn Schema::enum_by_name(self : Schema, name : String) -> EnumType? {
   for e in self.enums {
     if e.name == name {
       return Some(e)
+    }
+  }
+  None
+}
+
+///|
+/// Declare a union type over the named member object types. Renders as
+/// `union Name = A | B`.
+pub fn Schema::union(
+  self : Schema,
+  name : String,
+  members : Array[String],
+) -> Unit {
+  self.unions.push({ name, members })
+}
+
+///|
+/// Look up a declared union type by name.
+pub fn Schema::union_by_name(self : Schema, name : String) -> UnionType? {
+  for u in self.unions {
+    if u.name == name {
+      return Some(u)
+    }
+  }
+  None
+}
+
+///|
+/// Register a custom scalar with its `serialize` / `parse_value` hooks. Both
+/// default to identity, which is enough for a scalar that only renames JSON it
+/// already carries (a `DateTime` stored as an ISO string, say).
+pub fn Schema::scalar(
+  self : Schema,
+  name : String,
+  serialize? : (Json) -> Json = fn(x) { x },
+  parse_value? : (Json) -> Json = fn(x) { x },
+) -> Unit {
+  self.scalars.push({ name, serialize, parse_value })
+}
+
+///|
+/// Look up a registered custom scalar by name.
+pub fn Schema::scalar_by_name(self : Schema, name : String) -> ScalarType? {
+  for s in self.scalars {
+    if s.name == name {
+      return Some(s)
     }
   }
   None
@@ -257,6 +334,19 @@ pub fn Schema::to_sdl(self : Schema) -> String {
       out = out + "  " + v + "\n"
     }
     out = out + "}\n\n"
+  }
+  for un in self.unions {
+    out = out + "union " + un.name + " = "
+    for i, m in un.members {
+      if i > 0 {
+        out = out + " | "
+      }
+      out = out + m
+    }
+    out = out + "\n\n"
+  }
+  for sc in self.scalars {
+    out = out + "scalar " + sc.name + "\n\n"
   }
   out
 }

@@ -1,0 +1,222 @@
+///|
+/// Subscription execution (GraphQL spec §6.2.3). A subscription operation has a
+/// single root field backed by a *source stream* of events; each event is mapped
+/// through the normal execution machinery into one `{ data, errors }` payload.
+///
+/// The stream is modelled as a pull source — a resolver returning an
+/// `Array[Json]` of payloads — so the whole pipeline is synchronous and runs on
+/// every backend. `execute_subscription` returns the ordered sequence of response
+/// payloads, exactly what a client would receive over the wire in order.
+///
+/// The async native variant (a live stream over a WebSocket, driven by
+/// moonasgi/mooncat) wraps the same core: the source resolver becomes an async
+/// generator yielding events, and each event runs `execute_subscription_event`
+/// below. Splitting the pull source from the transport keeps the ordering and
+/// per-event execution testable without an async runtime.
+
+///|
+/// A registry of subscription *source* resolvers, keyed by `"TypeName.fieldName"`
+/// on the subscription root type. A source returns the ordered stream of event
+/// payloads; each payload is the resolved value of the root field for one event,
+/// and its sub-selection is resolved against it like any object value.
+pub struct Subscribers {
+  map : Map[String, (ResolveInfo) -> Array[Json] raise ResolverError]
+}
+
+///|
+/// Create an empty subscription source registry.
+pub fn Subscribers::new() -> Subscribers {
+  { map: Map([]) }
+}
+
+///|
+/// Register a source stream for the root subscription field `field_name` on
+/// `type_name`. The source is called once per operation and yields the ordered
+/// events to deliver.
+pub fn Subscribers::field(
+  self : Subscribers,
+  type_name : String,
+  field_name : String,
+  source : (ResolveInfo) -> Array[Json] raise ResolverError,
+) -> Unit {
+  self.map[type_name + "." + field_name] = source
+}
+
+///|
+/// Whether `name` is an introspection meta-field (`__`-prefixed), which the spec
+/// forbids as a subscription root field.
+fn is_meta_field(name : String) -> Bool {
+  name.length() >= 2 && name[0].to_int() == 95 && name[1].to_int() == 95
+}
+
+///|
+/// ExecuteSubscriptionEvent (spec §6.2.3.3): produce one response's `data` for a
+/// single event. The event is the resolved value of the root field, so it is
+/// completed directly against the field's type and its sub-selection resolves
+/// against it. A non-null root field whose event is null nulls out `data`.
+fn Exec::execute_subscription_event(
+  self : Exec,
+  root_type : ObjectType,
+  key : String,
+  group : Array[QueryField],
+  event : Json,
+) -> Json {
+  let first = group[0]
+  let fpath : Array[Json] = [key.to_json()]
+  match self.field_type_of(root_type, first.name) {
+    None => {
+      self.add_error(
+        "Cannot query field '" +
+        first.name +
+        "' on type '" +
+        root_type.name +
+        "'",
+        fpath,
+      )
+      let m : Map[String, Json] = Map([])
+      m[key] = Json::null()
+      m.to_json()
+    }
+    Some(ftype) => {
+      let completed = self.complete(ftype, event, group, fpath) catch {
+        NullBubble => {
+          if ftype is NonNull(_) {
+            return Json::null()
+          }
+          Json::null()
+        }
+      }
+      let m : Map[String, Json] = Map([])
+      m[key] = completed
+      m.to_json()
+    }
+  }
+}
+
+///|
+/// Run a subscription operation and collect its ordered response payloads.
+///
+/// Parses and validates `query`, requires a single-root-field subscription
+/// operation, invokes the registered source for that field, then maps every
+/// event to a `{ data, errors }` response — returning them in stream order. A
+/// parse/validation failure or a missing source yields a single error response.
+/// `variables`, `operation_name`, `root_value` and `context` mirror `execute`.
+pub fn execute_subscription(
+  schema : Schema,
+  resolvers : Resolvers,
+  subscribers : Subscribers,
+  query : String,
+  variables? : Map[String, Json] = Map([]),
+  operation_name? : String? = None,
+  root_value? : Json = Json::null(),
+  context? : Json = Json::null(),
+) -> Array[Json] {
+  let doc = parse(query) catch {
+    GqlSyntaxError(m, line, col) =>
+      return [
+        build_response(None, [
+          { message: m, path: [], locations: [(line, col)] },
+        ]),
+      ]
+  }
+  let verrors = validate(schema, doc)
+  if verrors.length() > 0 {
+    return [build_response(None, verrors)]
+  }
+  let prepared = match select_operation(schema, doc, operation_name) {
+    Ok(p) => p
+    Err(e) => return [build_response(None, [e])]
+  }
+  if not(prepared.operation.operation is Subscription) {
+    return [
+      build_response(None, [
+        GqlError::msg("execute_subscription requires a subscription operation"),
+      ]),
+    ]
+  }
+  let fragments = collect_fragments(doc)
+  let vars = coerce_variables(prepared.operation, variables, fragments)
+  let root_type = match schema.type_by_name(prepared.root_type) {
+    Some(t) => t
+    None =>
+      return [
+        build_response(None, [
+          GqlError::msg("Root type '" + prepared.root_type + "' is not defined"),
+        ]),
+      ]
+  }
+  let exec = Exec::state(schema, resolvers, fragments, vars, context)
+  let keys : Array[String] = []
+  let groups : Map[String, Array[QueryField]] = Map([])
+  exec.collect_fields(
+    root_type,
+    prepared.operation.selection_set,
+    Map([]),
+    keys,
+    groups,
+  )
+  if keys.length() != 1 {
+    return [
+      build_response(None, [
+        GqlError::msg(
+          "Subscription operation must select exactly one root field",
+        ),
+      ]),
+    ]
+  }
+  let key = keys[0]
+  let group = match groups.get(key) {
+    Some(g) => g
+    None =>
+      return [build_response(None, [GqlError::msg("internal: missing group")])]
+  }
+  let root_field = group[0]
+  if is_meta_field(root_field.name) {
+    return [
+      build_response(None, [
+        GqlError::msg(
+          "Introspection field '" +
+          root_field.name +
+          "' cannot be a subscription root",
+        ),
+      ]),
+    ]
+  }
+  let source = match
+    subscribers.map.get(root_type.name + "." + root_field.name) {
+    Some(f) => f
+    None =>
+      return [
+        build_response(None, [
+          GqlError::msg(
+            "No subscription source registered for '" +
+            root_type.name +
+            "." +
+            root_field.name +
+            "'",
+          ),
+        ]),
+      ]
+  }
+  let args = exec.coerce_args(root_field)
+  match root_type.field_by_name(root_field.name) {
+    Some(fdef) => exec.apply_input_scalars(args, fdef)
+    None => ()
+  }
+  let info = {
+    parent: root_value,
+    args,
+    ctx: context,
+    field_name: root_field.name,
+  }
+  let events = source(info) catch {
+    ResolverError(m) => return [build_response(None, [GqlError::msg(m)])]
+  }
+  let out : Array[Json] = []
+  for ev in events {
+    let ex = Exec::state(schema, resolvers, fragments, vars, context)
+    let data = ex.execute_subscription_event(root_type, key, group, ev)
+    out.push(build_response(Some(data), ex.errors))
+  }
+  out
+}
