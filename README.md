@@ -52,7 +52,16 @@ Verified across all backends (`wasm`, `wasm-gc`, `js`, `native`) in CI, 0 warnin
 
 ## Roadmap (transliterating strawberry)
 
-The code-first schema and SDL are here, now with **field arguments** (`field_args`), **input object types** (`Schema::input`), **enum types** (`Schema::enum_`), and **interfaces** (`Schema::interface` + object `implements`). Next, feature-by-feature: unions; a GraphQL query parser and validator; an executor with resolvers over the moonasgi SEAM (served by `mooncat`); introspection and a GraphiQL endpoint; then subscriptions and dataloaders.
+The code-first schema and SDL are here, with **field arguments** (`field_args`), **input object types** (`Schema::input`), **enum types** (`Schema::enum_`), and **interfaces** (`Schema::interface` + object `implements`). The **query parser** now lands too — a hand-written lexer and a recursive-descent parser that turn a query string into a `Document` AST:
+
+```moonbit
+let doc = @moongql.parse(
+  "query ($id: ID!) { user(id: $id) { name ...fields @skip(if: false) } }",
+)
+// doc.definitions[0] is an OperationDefinition; doc.to_query() prints it back.
+```
+
+It covers operations (`query`/`mutation`/`subscription` and the `{ ... }` shorthand), selection sets, fields with aliases/arguments/directives, variable definitions with default values, named and inline fragments, `@skip`/`@include` directives, and every input value (variables, ints, floats, strings, block strings, booleans, null, enums, lists, objects) — enough to parse the full GraphQL introspection query. Next, feature-by-feature: a validator (against the schema); an executor with resolvers over the moonasgi SEAM (served by `mooncat`); introspection and a GraphiQL endpoint; then subscriptions and dataloaders.
 
 ```moonbit
 let s = @moongql.Schema::new()

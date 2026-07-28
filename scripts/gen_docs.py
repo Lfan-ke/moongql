@@ -9,6 +9,19 @@ SECTIONS = [
     ("schema", "schema.mbt", "Schema & SDL",
      "Code-first GraphQL: build object types and fields, then to_sdl emits the "
      "schema SDL. GqlType covers scalars, named refs, NonNull and List wrappers."),
+    ("lexer", "lexer.mbt", "Query Lexer",
+     "Hand-written GraphQL lexer: turns a query string into names, punctuators, "
+     "int/float/string tokens (block strings dedented per spec), ignoring "
+     "whitespace, commas and comments. Pure logic, no core/lexbuf dependency."),
+    ("ast", "ast.mbt", "Document AST",
+     "The executable-document AST (operations, selection sets, fields, "
+     "arguments, variables, fragments, directives, input values), with to_query "
+     "printers that render each node back to canonical GraphQL."),
+    ("parser", "parser.mbt", "Query Parser",
+     "Recursive-descent parser: parse(source) builds a Document from operations "
+     "(query/mutation/subscription and the { ... } shorthand), fields with "
+     "aliases/arguments/directives, variable definitions, and named/inline "
+     "fragments — the front half of the executor."),
 ]
 
 KIND = {"struct": "struct", "enum": "enum", "fn": "fn", "type": "type", "let": "let"}
