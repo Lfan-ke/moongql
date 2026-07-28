@@ -105,17 +105,79 @@ pub(all) struct EnumType {
 
 ///|
 /// A code-first GraphQL schema: composite types (objects, inputs, interfaces),
-/// enum types, plus the name of the root query type.
+/// enum types, plus the names of the root operation types. `query` is required;
+/// `mutation` and `subscription` are optional (a schema without them cannot run
+/// operations of that kind).
 pub struct Schema {
   types : Array[ObjectType]
   enums : Array[EnumType]
   query : String
+  mut mutation : String?
+  mut subscription : String?
 }
 
 ///|
-/// Create an empty schema whose root query type is `query` (default `Query`).
+/// Create an empty schema whose root query type is `query` (default `Query`),
+/// with no mutation or subscription root until `set_mutation` / `set_subscription`
+/// name them.
 pub fn Schema::new(query? : String = "Query") -> Schema {
-  { types: [], enums: [], query }
+  { types: [], enums: [], query, mutation: None, subscription: None }
+}
+
+///|
+/// Name the root mutation type; it must also be declared with `object`.
+pub fn Schema::set_mutation(self : Schema, name : String) -> Unit {
+  self.mutation = Some(name)
+}
+
+///|
+/// Name the root subscription type; it must also be declared with `object`.
+pub fn Schema::set_subscription(self : Schema, name : String) -> Unit {
+  self.subscription = Some(name)
+}
+
+///|
+/// Look up a declared composite type (object / input / interface) by name.
+pub fn Schema::type_by_name(self : Schema, name : String) -> ObjectType? {
+  for t in self.types {
+    if t.name == name {
+      return Some(t)
+    }
+  }
+  None
+}
+
+///|
+/// Look up a declared enum type by name.
+pub fn Schema::enum_by_name(self : Schema, name : String) -> EnumType? {
+  for e in self.enums {
+    if e.name == name {
+      return Some(e)
+    }
+  }
+  None
+}
+
+///|
+/// Look up a field on this type by its name.
+pub fn ObjectType::field_by_name(self : ObjectType, name : String) -> Field? {
+  for f in self.fields {
+    if f.name == name {
+      return Some(f)
+    }
+  }
+  None
+}
+
+///|
+/// The base named type a possibly-wrapped type refers to (unwrapping `!`/`[]`).
+pub fn GqlType::named_base(self : GqlType) -> String {
+  match self {
+    Scalar(s) => s
+    Named(n) => n
+    NonNull(inner) => inner.named_base()
+    ListOf(inner) => inner.named_base()
+  }
 }
 
 ///|

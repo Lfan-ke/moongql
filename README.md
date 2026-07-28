@@ -61,7 +61,41 @@ let doc = @moongql.parse(
 // doc.definitions[0] is an OperationDefinition; doc.to_query() prints it back.
 ```
 
-It covers operations (`query`/`mutation`/`subscription` and the `{ ... }` shorthand), selection sets, fields with aliases/arguments/directives, variable definitions with default values, named and inline fragments, `@skip`/`@include` directives, and every input value (variables, ints, floats, strings, block strings, booleans, null, enums, lists, objects) — enough to parse the full GraphQL introspection query. Next, feature-by-feature: a validator (against the schema); an executor with resolvers over the moonasgi SEAM (served by `mooncat`); introspection and a GraphiQL endpoint; then subscriptions and dataloaders.
+It covers operations (`query`/`mutation`/`subscription` and the `{ ... }` shorthand), selection sets, fields with aliases/arguments/directives, variable definitions with default values, named and inline fragments, `@skip`/`@include` directives, and every input value (variables, ints, floats, strings, block strings, booleans, null, enums, lists, objects) — enough to parse the full GraphQL introspection query.
+
+## Executing a query
+
+`moongql` now **runs** queries. `execute` parses, validates against the schema, then walks the document with a **resolver map** — `(ResolveInfo) -> Json` functions keyed by `"Type.field"` — returning the `{ data, errors }` response as JSON. It supports variables (with defaults), aliases, named and inline fragments, `@skip`/`@include`, nested selection, list and object results, non-null error propagation, and full introspection (`__schema` / `__type` / `__typename`).
+
+```moonbit
+let s = @moongql.Schema::new()
+let q = s.object("Query")
+q.field_args("user", [("id", @moongql.NonNull(@moongql.Scalar("ID")))],
+  @moongql.Named("User"))
+let u = s.object("User")
+u.field("id", @moongql.NonNull(@moongql.Scalar("ID")))
+u.field("name", @moongql.NonNull(@moongql.Scalar("String")))
+
+let r = @moongql.Resolvers::new()
+r.field("Query", "user", fn(info) {
+  match info.arg("id") {
+    String("1") => { "id": "1", "name": "Alice" }
+    _ => Json::null()
+  }
+})
+// User.id / User.name fall back to the default resolver (read off the parent).
+
+let vars : Map[String, Json] = { "uid": "1" }
+let res = @moongql.execute(s, r,
+  "query ($uid: ID!) { hero: user(id: $uid) { id name } }", variables=vars)
+// res.stringify() == {"data":{"hero":{"id":"1","name":"Alice"}}}
+```
+
+### Design: faithful equivalences to strawberry
+
+MoonBit has no runtime reflection, so where strawberry discovers resolvers and schema from Python classes, `moongql` uses **explicit** values: resolvers are functions registered by `"Type.field"` (like Rust/Go GraphQL servers), and a field's declared return type drives leaf-vs-composite completion exactly as `graphql-core`'s `complete_value` does. Fields with no registered resolver read their value off the parent JSON object — the equivalent of `graphql-core`'s `default_field_resolver`.
+
+Still feature-by-feature ahead: custom scalars and unions, a GraphiQL endpoint over the moonasgi SEAM (served by `mooncat`), DataLoader batching, and subscriptions.
 
 ```moonbit
 let s = @moongql.Schema::new()

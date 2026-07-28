@@ -1,3 +1,8 @@
-// moongql (<- strawberry-graphql). v0 = the code-first schema: build object types
-// and fields programmatically, then emit GraphQL SDL. Pure logic, no deps; the
-// query parser / executor / introspection are sequenced after.
+// moongql (<- strawberry-graphql). The code-first schema (schema.mbt) plus the
+// executable pipeline: lexer -> parser -> AST -> validator -> executor with a
+// resolver map, variables, aliases, fragments, @skip/@include and introspection.
+// Pure logic, all backends; JSON in/out via core/json, literal coercion via
+// core/strconv.
+import {
+  "moonbitlang/core/json",
+}

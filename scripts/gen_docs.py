@@ -22,6 +22,21 @@ SECTIONS = [
      "(query/mutation/subscription and the { ... } shorthand), fields with "
      "aliases/arguments/directives, variable definitions, and named/inline "
      "fragments — the front half of the executor."),
+    ("validate", "validate.mbt", "Validator",
+     "Validate a Document against the Schema before execution: fields and "
+     "arguments exist, leaf vs composite selection sets, fragment spreads and "
+     "type conditions resolve, and referenced variables are defined. Errors are "
+     "collected, not raised."),
+    ("execute", "execute.mbt", "Executor",
+     "execute() runs a query end to end: parse, validate, then walk the document "
+     "with a resolver map ((ResolveInfo) -> Json keyed by \"Type.field\"), "
+     "supporting variables, aliases, fragments, @skip/@include, non-null error "
+     "propagation and list/object results — returning { data, errors } as JSON."),
+    ("introspection", "introspection.mbt", "Introspection",
+     "Answer __schema / __type / __typename from the schema: the introspection "
+     "type system materialised as JSON that the executor walks like any object, "
+     "with ofType wrapper chains, fields, interfaces, possibleTypes and enum "
+     "values."),
 ]
 
 KIND = {"struct": "struct", "enum": "enum", "fn": "fn", "type": "type", "let": "let"}

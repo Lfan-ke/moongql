@@ -1,0 +1,383 @@
+///|
+/// GraphQL introspection (spec §4): answer `__schema`, `__type` and `__typename`
+/// from the schema. The introspection type system (`__Schema`, `__Type`,
+/// `__Field`, `__InputValue`, `__EnumValue`, `__Directive`) is defined here as
+/// synthetic `ObjectType`s so the executor's normal field-completion machinery
+/// can walk an introspection selection set, while the data is materialised as
+/// JSON that the default resolver reads through.
+
+///|
+/// A synthetic introspection object type: a name and its `(field, type)` list.
+fn intro_obj(name : String, fields : Array[(String, GqlType)]) -> ObjectType {
+  let fs : Array[Field] = []
+  for f in fields {
+    fs.push({ name: f.0, args: [], typ: f.1 })
+  }
+  { name, fields: fs, kind: Object, interfaces: [] }
+}
+
+///|
+/// The synthetic definition of an introspection type by name, or `None`. These
+/// drive leaf-vs-composite completion when executing an introspection query.
+fn introspection_type_def(name : String) -> ObjectType? {
+  let t = Scalar("String")
+  let b = NonNull(Scalar("Boolean"))
+  match name {
+    "__Schema" =>
+      Some(
+        intro_obj("__Schema", [
+          ("description", t),
+          ("types", NonNull(ListOf(NonNull(Named("__Type"))))),
+          ("queryType", NonNull(Named("__Type"))),
+          ("mutationType", Named("__Type")),
+          ("subscriptionType", Named("__Type")),
+          ("directives", NonNull(ListOf(NonNull(Named("__Directive"))))),
+        ]),
+      )
+    "__Type" =>
+      Some(
+        intro_obj("__Type", [
+          ("kind", NonNull(Named("__TypeKind"))),
+          ("name", t),
+          ("description", t),
+          ("fields", ListOf(NonNull(Named("__Field")))),
+          ("interfaces", ListOf(NonNull(Named("__Type")))),
+          ("possibleTypes", ListOf(NonNull(Named("__Type")))),
+          ("enumValues", ListOf(NonNull(Named("__EnumValue")))),
+          ("inputFields", ListOf(NonNull(Named("__InputValue")))),
+          ("ofType", Named("__Type")),
+        ]),
+      )
+    "__Field" =>
+      Some(
+        intro_obj("__Field", [
+          ("name", NonNull(Scalar("String"))),
+          ("description", t),
+          ("args", NonNull(ListOf(NonNull(Named("__InputValue"))))),
+          ("type", NonNull(Named("__Type"))),
+          ("isDeprecated", b),
+          ("deprecationReason", t),
+        ]),
+      )
+    "__InputValue" =>
+      Some(
+        intro_obj("__InputValue", [
+          ("name", NonNull(Scalar("String"))),
+          ("description", t),
+          ("type", NonNull(Named("__Type"))),
+          ("defaultValue", t),
+        ]),
+      )
+    "__EnumValue" =>
+      Some(
+        intro_obj("__EnumValue", [
+          ("name", NonNull(Scalar("String"))),
+          ("description", t),
+          ("isDeprecated", b),
+          ("deprecationReason", t),
+        ]),
+      )
+    "__Directive" =>
+      Some(
+        intro_obj("__Directive", [
+          ("name", NonNull(Scalar("String"))),
+          ("description", t),
+          ("locations", NonNull(ListOf(NonNull(Named("__DirectiveLocation"))))),
+          ("args", NonNull(ListOf(NonNull(Named("__InputValue"))))),
+          ("isRepeatable", b),
+        ]),
+      )
+    _ => None
+  }
+}
+
+///|
+/// The introspection `__TypeKind` enum name for a type name in this schema.
+fn Exec::type_kind(self : Exec, name : String) -> String {
+  if is_builtin_scalar(name) {
+    return "SCALAR"
+  }
+  match self.schema.type_by_name(name) {
+    Some(t) =>
+      match t.kind {
+        Object => "OBJECT"
+        Input => "INPUT_OBJECT"
+        Interface => "INTERFACE"
+      }
+    None =>
+      if self.schema.enum_by_name(name) is Some(_) {
+        "ENUM"
+      } else {
+        "SCALAR"
+      }
+  }
+}
+
+///|
+/// A shallow `__Type` reference: `{ kind, name, ofType: null }` with the detail
+/// fields null. Used wherever introspection points at a type by reference
+/// (`ofType`, `queryType`, a field's `type`, interface / possibleType entries).
+fn Exec::named_type_ref(self : Exec, name : String) -> Json {
+  jobj([
+    ("kind", self.type_kind(name).to_json()),
+    ("name", name.to_json()),
+    ("description", Json::null()),
+    ("fields", Json::null()),
+    ("interfaces", Json::null()),
+    ("possibleTypes", Json::null()),
+    ("enumValues", Json::null()),
+    ("inputFields", Json::null()),
+    ("ofType", Json::null()),
+  ])
+}
+
+///|
+/// A `__Type` wrapper reference (`NON_NULL` / `LIST`) around `of_type`.
+fn wrapper_ref(kind : String, of_type : Json) -> Json {
+  jobj([
+    ("kind", kind.to_json()),
+    ("name", Json::null()),
+    ("description", Json::null()),
+    ("fields", Json::null()),
+    ("interfaces", Json::null()),
+    ("possibleTypes", Json::null()),
+    ("enumValues", Json::null()),
+    ("inputFields", Json::null()),
+    ("ofType", of_type),
+  ])
+}
+
+///|
+/// The introspection `__Type` reference for a possibly-wrapped `GqlType`,
+/// nesting `ofType` for each `!` / `[]` wrapper.
+fn Exec::type_ref_json(self : Exec, t : GqlType) -> Json {
+  match t {
+    NonNull(inner) => wrapper_ref("NON_NULL", self.type_ref_json(inner))
+    ListOf(inner) => wrapper_ref("LIST", self.type_ref_json(inner))
+    Scalar(n) => self.named_type_ref(n)
+    Named(n) => self.named_type_ref(n)
+  }
+}
+
+///|
+/// Materialise a `__InputValue` for an argument or input field.
+fn Exec::input_value_json(self : Exec, name : String, typ : GqlType) -> Json {
+  jobj([
+    ("name", name.to_json()),
+    ("description", Json::null()),
+    ("type", self.type_ref_json(typ)),
+    ("defaultValue", Json::null()),
+  ])
+}
+
+///|
+/// Materialise a `__Field` for an output field.
+fn Exec::field_json(self : Exec, f : Field) -> Json {
+  let args : Array[Json] = []
+  for a in f.args {
+    args.push(self.input_value_json(a.0, a.1))
+  }
+  jobj([
+    ("name", f.name.to_json()),
+    ("description", Json::null()),
+    ("args", args.to_json()),
+    ("type", self.type_ref_json(f.typ)),
+    ("isDeprecated", false.to_json()),
+    ("deprecationReason", Json::null()),
+  ])
+}
+
+///|
+/// Materialise the full `__Type` for a declared composite type (object / input
+/// object / interface), including its fields, interfaces and possibleTypes.
+fn Exec::composite_type_json(self : Exec, def : ObjectType) -> Json {
+  let kind = match def.kind {
+    Object => "OBJECT"
+    Input => "INPUT_OBJECT"
+    Interface => "INTERFACE"
+  }
+  let fields = if def.kind is Input {
+    Json::null()
+  } else {
+    let fs : Array[Json] = []
+    for f in def.fields {
+      fs.push(self.field_json(f))
+    }
+    fs.to_json()
+  }
+  let input_fields = if def.kind is Input {
+    let fs : Array[Json] = []
+    for f in def.fields {
+      fs.push(self.input_value_json(f.name, f.typ))
+    }
+    fs.to_json()
+  } else {
+    Json::null()
+  }
+  let interfaces = if def.kind is Input {
+    Json::null()
+  } else {
+    let is_ : Array[Json] = []
+    for i in def.interfaces {
+      is_.push(self.named_type_ref(i))
+    }
+    is_.to_json()
+  }
+  let possible_types = if def.kind is Interface {
+    let ps : Array[Json] = []
+    for t in self.schema.types {
+      for i in t.interfaces {
+        if i == def.name {
+          ps.push(self.named_type_ref(t.name))
+          break
+        }
+      }
+    }
+    ps.to_json()
+  } else {
+    Json::null()
+  }
+  jobj([
+    ("kind", kind.to_json()),
+    ("name", def.name.to_json()),
+    ("description", Json::null()),
+    ("fields", fields),
+    ("interfaces", interfaces),
+    ("possibleTypes", possible_types),
+    ("enumValues", Json::null()),
+    ("inputFields", input_fields),
+    ("ofType", Json::null()),
+  ])
+}
+
+///|
+/// Materialise the full `__Type` for an enum type.
+fn Exec::enum_type_json(self : Exec, def : EnumType) -> Json {
+  ignore(self)
+  let vals : Array[Json] = []
+  for v in def.values {
+    vals.push(
+      jobj([
+        ("name", v.to_json()),
+        ("description", Json::null()),
+        ("isDeprecated", false.to_json()),
+        ("deprecationReason", Json::null()),
+      ]),
+    )
+  }
+  jobj([
+    ("kind", "ENUM".to_json()),
+    ("name", def.name.to_json()),
+    ("description", Json::null()),
+    ("fields", Json::null()),
+    ("interfaces", Json::null()),
+    ("possibleTypes", Json::null()),
+    ("enumValues", vals.to_json()),
+    ("inputFields", Json::null()),
+    ("ofType", Json::null()),
+  ])
+}
+
+///|
+/// Materialise the full `__Type` for a built-in scalar.
+fn scalar_type_json(name : String) -> Json {
+  jobj([
+    ("kind", "SCALAR".to_json()),
+    ("name", name.to_json()),
+    ("description", Json::null()),
+    ("fields", Json::null()),
+    ("interfaces", Json::null()),
+    ("possibleTypes", Json::null()),
+    ("enumValues", Json::null()),
+    ("inputFields", Json::null()),
+    ("ofType", Json::null()),
+  ])
+}
+
+///|
+/// Resolve `__type(name:)` to a fully-materialised `__Type`, or JSON null.
+fn Exec::introspection_type_by_name(self : Exec, name : String) -> Json {
+  match self.schema.type_by_name(name) {
+    Some(def) => return self.composite_type_json(def)
+    None => ()
+  }
+  match self.schema.enum_by_name(name) {
+    Some(def) => return self.enum_type_json(def)
+    None => ()
+  }
+  if is_builtin_scalar(name) {
+    return scalar_type_json(name)
+  }
+  Json::null()
+}
+
+///|
+/// The three standard built-in directives, materialised as `__Directive`s.
+fn Exec::directives_json(self : Exec) -> Json {
+  let field_locs : Array[Json] = [
+    "FIELD".to_json(),
+    "FRAGMENT_SPREAD".to_json(),
+    "INLINE_FRAGMENT".to_json(),
+  ]
+  let bool_if : Array[Json] = [
+    self.input_value_json("if", NonNull(Scalar("Boolean"))),
+  ]
+  let deprecated_reason : Array[Json] = [
+    self.input_value_json("reason", Scalar("String")),
+  ]
+  let directive = fn(
+    name : String,
+    locs : Array[Json],
+    args : Array[Json],
+  ) -> Json {
+    jobj([
+      ("name", name.to_json()),
+      ("description", Json::null()),
+      ("locations", locs.to_json()),
+      ("args", args.to_json()),
+      ("isRepeatable", false.to_json()),
+    ])
+  }
+  [
+    directive("include", field_locs, bool_if),
+    directive("skip", field_locs, bool_if),
+    directive(
+      "deprecated",
+      ["FIELD_DEFINITION".to_json(), "ENUM_VALUE".to_json()],
+      deprecated_reason,
+    ),
+  ].to_json()
+}
+
+///|
+/// Materialise the `__schema` root: query/mutation/subscription roots, every
+/// declared type (user composites, enums and the built-in scalars), and the
+/// built-in directives.
+fn Exec::introspection_schema(self : Exec) -> Json {
+  let types : Array[Json] = []
+  for t in self.schema.types {
+    types.push(self.composite_type_json(t))
+  }
+  for e in self.schema.enums {
+    types.push(self.enum_type_json(e))
+  }
+  for s in ["String", "Int", "Float", "Boolean", "ID"] {
+    types.push(scalar_type_json(s))
+  }
+  let mutation = match self.schema.mutation {
+    Some(m) => self.named_type_ref(m)
+    None => Json::null()
+  }
+  let subscription = match self.schema.subscription {
+    Some(s) => self.named_type_ref(s)
+    None => Json::null()
+  }
+  jobj([
+    ("description", Json::null()),
+    ("queryType", self.named_type_ref(self.schema.query)),
+    ("mutationType", mutation),
+    ("subscriptionType", subscription),
+    ("types", types.to_json()),
+    ("directives", self.directives_json()),
+  ])
+}
