@@ -94,14 +94,29 @@ fn Exec::execute_subscription_event(
 }
 
 ///|
-/// Run a subscription operation and collect its ordered response payloads.
-///
-/// Parses and validates `query`, requires a single-root-field subscription
-/// operation, invokes the registered source for that field, then maps every
-/// event to a `{ data, errors }` response — returning them in stream order. A
-/// parse/validation failure or a missing source yields a single error response.
-/// `variables`, `operation_name`, `root_value` and `context` mirror `execute`.
-pub fn execute_subscription(
+/// The outcome of establishing a subscription (GraphQL spec §6.2.3
+/// `CreateSourceEventStream` + `MapSourceToResponseEvent`): either the request
+/// failed before any event could be produced — a parse, validation, or
+/// source-resolution error the client should receive *instead of* a stream — or
+/// the source yielded its ordered `{ data, errors }` response payloads. Keeping
+/// the two apart lets a transport (the `graphql-transport-ws` handler) send a
+/// single `error` message for the former and a run of `next` messages for the
+/// latter, which the flat "one error response in the payload list" shape cannot
+/// distinguish.
+pub(all) enum SubscriptionResult {
+  RequestError(Array[GqlError])
+  EventStream(Array[Json])
+}
+
+///|
+/// Establish a subscription and materialise its event payloads. Parses and
+/// validates `query`, requires a single-root-field subscription operation,
+/// invokes the registered source, and maps every event through
+/// `execute_subscription_event`. Any failure before the first event —
+/// parse/validation error, a non-subscription operation, more than one root
+/// field, an introspection root, a missing source, or a source `ResolverError` —
+/// is a `RequestError`; success is an `EventStream` of ordered response payloads.
+pub fn create_source_event_stream(
   schema : Schema,
   resolvers : Resolvers,
   subscribers : Subscribers,
@@ -110,40 +125,32 @@ pub fn execute_subscription(
   operation_name? : String? = None,
   root_value? : Json = Json::null(),
   context? : Json = Json::null(),
-) -> Array[Json] {
+) -> SubscriptionResult {
   let doc = parse(query) catch {
     GqlSyntaxError(m, line, col) =>
-      return [
-        build_response(None, [
-          { message: m, path: [], locations: [(line, col)] },
-        ]),
-      ]
+      return RequestError([{ message: m, path: [], locations: [(line, col)] }])
   }
   let verrors = validate(schema, doc)
   if verrors.length() > 0 {
-    return [build_response(None, verrors)]
+    return RequestError(verrors)
   }
   let prepared = match select_operation(schema, doc, operation_name) {
     Ok(p) => p
-    Err(e) => return [build_response(None, [e])]
+    Err(e) => return RequestError([e])
   }
   if not(prepared.operation.operation is Subscription) {
-    return [
-      build_response(None, [
-        GqlError::msg("execute_subscription requires a subscription operation"),
-      ]),
-    ]
+    return RequestError([
+      GqlError::msg("execute_subscription requires a subscription operation"),
+    ])
   }
   let fragments = collect_fragments(doc)
   let vars = coerce_variables(prepared.operation, variables, fragments)
   let root_type = match schema.type_by_name(prepared.root_type) {
     Some(t) => t
     None =>
-      return [
-        build_response(None, [
-          GqlError::msg("Root type '" + prepared.root_type + "' is not defined"),
-        ]),
-      ]
+      return RequestError([
+        GqlError::msg("Root type '" + prepared.root_type + "' is not defined"),
+      ])
   }
   let exec = Exec::state(schema, resolvers, fragments, vars, context)
   let keys : Array[String] = []
@@ -156,47 +163,38 @@ pub fn execute_subscription(
     groups,
   )
   if keys.length() != 1 {
-    return [
-      build_response(None, [
-        GqlError::msg(
-          "Subscription operation must select exactly one root field",
-        ),
-      ]),
-    ]
+    return RequestError([
+      GqlError::msg("Subscription operation must select exactly one root field"),
+    ])
   }
   let key = keys[0]
   let group = match groups.get(key) {
     Some(g) => g
-    None =>
-      return [build_response(None, [GqlError::msg("internal: missing group")])]
+    None => return RequestError([GqlError::msg("internal: missing group")])
   }
   let root_field = group[0]
   if is_meta_field(root_field.name) {
-    return [
-      build_response(None, [
-        GqlError::msg(
-          "Introspection field '" +
-          root_field.name +
-          "' cannot be a subscription root",
-        ),
-      ]),
-    ]
+    return RequestError([
+      GqlError::msg(
+        "Introspection field '" +
+        root_field.name +
+        "' cannot be a subscription root",
+      ),
+    ])
   }
   let source = match
     subscribers.map.get(root_type.name + "." + root_field.name) {
     Some(f) => f
     None =>
-      return [
-        build_response(None, [
-          GqlError::msg(
-            "No subscription source registered for '" +
-            root_type.name +
-            "." +
-            root_field.name +
-            "'",
-          ),
-        ]),
-      ]
+      return RequestError([
+        GqlError::msg(
+          "No subscription source registered for '" +
+          root_type.name +
+          "." +
+          root_field.name +
+          "'",
+        ),
+      ])
   }
   let args = exec.coerce_args(root_field)
   match root_type.field_by_name(root_field.name) {
@@ -210,7 +208,7 @@ pub fn execute_subscription(
     field_name: root_field.name,
   }
   let events = source(info) catch {
-    ResolverError(m) => return [build_response(None, [GqlError::msg(m)])]
+    ResolverError(m) => return RequestError([GqlError::msg(m)])
   }
   let out : Array[Json] = []
   for ev in events {
@@ -218,5 +216,38 @@ pub fn execute_subscription(
     let data = ex.execute_subscription_event(root_type, key, group, ev)
     out.push(build_response(Some(data), ex.errors))
   }
-  out
+  EventStream(out)
+}
+
+///|
+/// Run a subscription operation and collect its ordered response payloads.
+///
+/// A thin wrapper over `create_source_event_stream`: a `RequestError` collapses
+/// to a single `{ errors }` response (the flat shape callers without a streaming
+/// transport expect), and an `EventStream` is returned as-is. `variables`,
+/// `operation_name`, `root_value` and `context` mirror `execute`.
+pub fn execute_subscription(
+  schema : Schema,
+  resolvers : Resolvers,
+  subscribers : Subscribers,
+  query : String,
+  variables? : Map[String, Json] = Map([]),
+  operation_name? : String? = None,
+  root_value? : Json = Json::null(),
+  context? : Json = Json::null(),
+) -> Array[Json] {
+  match
+    create_source_event_stream(
+      schema,
+      resolvers,
+      subscribers,
+      query,
+      variables~,
+      operation_name~,
+      root_value~,
+      context~,
+    ) {
+    RequestError(errs) => [build_response(None, errs)]
+    EventStream(payloads) => payloads
+  }
 }
