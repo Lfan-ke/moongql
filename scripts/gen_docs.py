@@ -27,6 +27,17 @@ SECTIONS = [
      "arguments exist, leaf vs composite selection sets, fragment spreads and "
      "type conditions resolve, and referenced variables are defined. Errors are "
      "collected, not raised."),
+    ("validate_rules", "validate_rules.mbt", "Validation Rules (spec §5)",
+     "The document-level slice of the GraphQL validation table: operation-name "
+     "uniqueness and lone anonymous operation, fragment-name uniqueness, "
+     "no-unused-fragments, fragment-spread cycle detection, and the variable-use "
+     "collector behind the all-variables-used rule."),
+    ("directives", "directives.mbt", "Directives",
+     "The directive extension points: AppliedDirective records a directive use on "
+     "a schema element (federation's @key / @shareable / @inaccessible / "
+     "@override live here); DirectiveDef declares a custom directive with valid "
+     "locations, args, repeatability and an optional on_field execution hook that "
+     "transforms a resolved field value."),
     ("execute", "execute.mbt", "Executor",
      "execute() runs a query end to end: parse, validate, then walk the document "
      "with a resolver map ((ResolveInfo) -> Json keyed by \"Type.field\"), "
@@ -53,10 +64,11 @@ SECTIONS = [
      "body and returns { data, errors }. Plugs into mooncat and runs on every "
      "backend through moonasgi's TestClient."),
     ("federation", "federation.mbt", "Apollo Federation",
-     "Federation v1 subgraph support: register @key entities and their reference "
-     "resolvers, then apply installs _service { sdl }, the _Any scalar, the "
-     "_Entity union and the _entities(representations) resolver so a gateway can "
-     "compose and resolve the subgraph."),
+     "Federation v1 and v2 subgraph support: register @key entities and their "
+     "reference resolvers, then apply installs _service { sdl }, the _Any scalar, "
+     "the _Entity union and the _entities(representations) resolver. v2 opts in "
+     "with @link and adds @shareable / @inaccessible / @override / @requires / "
+     "@provides on fields, rendered into the subgraph SDL."),
 ]
 
 KIND = {"struct": "struct", "enum": "enum", "fn": "fn", "type": "type", "let": "let"}

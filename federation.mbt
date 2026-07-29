@@ -35,16 +35,126 @@ pub(all) struct EntityDef {
 
 ///|
 /// The federation configuration for a subgraph: the set of entity types it
-/// contributes. Build it with `new`, register entities with `entity`, then
-/// `apply` it to a schema and resolver map.
+/// contributes, whether it is a Federation **v2** subgraph (which opts in with an
+/// `@link` to the federation spec and unlocks `@shareable` / `@inaccessible` /
+/// `@override`), and the field-level federation directives it declares. Build it
+/// with `new`, register entities with `entity`, mark fields with `shareable` /
+/// `inaccessible` / `override_` / `requires` / `provides`, then `apply` it to a
+/// schema and resolver map.
 pub struct Federation {
   entities : Array[EntityDef]
+  v2 : Bool
+  field_dirs : Array[(String, String, AppliedDirective)]
 }
 
 ///|
-/// An empty federation config.
-pub fn Federation::new() -> Federation {
-  { entities: [] }
+/// An empty federation config. Pass `v2=true` for a Federation v2 subgraph, whose
+/// SDL opens with `extend schema @link(...)` importing the federation spec and
+/// which may use the v2-only directives (`@shareable`, `@inaccessible`,
+/// `@override`).
+pub fn Federation::new(v2? : Bool = false) -> Federation {
+  { entities: [], v2, field_dirs: [] }
+}
+
+///|
+/// The v2 `@link` onto the federation spec that heads a v2 subgraph's SDL, listing
+/// the directive names the subgraph imports.
+fn federation_link_directive() -> AppliedDirective {
+  let imports : Array[Json] = [
+    "@key".to_json(),
+    "@shareable".to_json(),
+    "@inaccessible".to_json(),
+    "@override".to_json(),
+    "@external".to_json(),
+    "@requires".to_json(),
+    "@provides".to_json(),
+    "@extends".to_json(),
+  ]
+  AppliedDirective::new("link", args=[
+    ("url", "https://specs.apollo.dev/federation/v2.3".to_json()),
+    ("import", imports.to_json()),
+  ])
+}
+
+///|
+/// Mark `type_name.field_name` `@shareable` — resolvable by more than one subgraph
+/// (v2). Without it, a non-key field must be owned by exactly one subgraph.
+pub fn Federation::shareable(
+  self : Federation,
+  type_name : String,
+  field_name : String,
+) -> Unit {
+  self.field_dirs.push(
+    (type_name, field_name, AppliedDirective::new("shareable")),
+  )
+}
+
+///|
+/// Mark `type_name.field_name` `@inaccessible` (v2) — present in this subgraph but
+/// omitted from the composed public schema, and hidden from introspection.
+pub fn Federation::inaccessible(
+  self : Federation,
+  type_name : String,
+  field_name : String,
+) -> Unit {
+  self.field_dirs.push(
+    (type_name, field_name, AppliedDirective::new("inaccessible")),
+  )
+}
+
+///|
+/// Declare that `type_name.field_name` is `@override`-taken from the subgraph
+/// `from` (v2) — this subgraph now resolves the field the other used to own.
+pub fn Federation::override_(
+  self : Federation,
+  type_name : String,
+  field_name : String,
+  from~ : String,
+) -> Unit {
+  self.field_dirs.push(
+    (
+      type_name,
+      field_name,
+      AppliedDirective::new("override", args=[("from", from.to_json())]),
+    ),
+  )
+}
+
+///|
+/// Declare that resolving `type_name.field_name` `@requires` the named external
+/// key fields (`"weight size"`), which the gateway then includes in the entity
+/// representation the `_entities` resolver receives.
+pub fn Federation::requires(
+  self : Federation,
+  type_name : String,
+  field_name : String,
+  fields~ : String,
+) -> Unit {
+  self.field_dirs.push(
+    (
+      type_name,
+      field_name,
+      AppliedDirective::new("requires", args=[("fields", fields.to_json())]),
+    ),
+  )
+}
+
+///|
+/// Declare that resolving `type_name.field_name` `@provides` the named fields of
+/// the returned entity, so the gateway can skip a round trip for them.
+pub fn Federation::provides(
+  self : Federation,
+  type_name : String,
+  field_name : String,
+  fields~ : String,
+) -> Unit {
+  self.field_dirs.push(
+    (
+      type_name,
+      field_name,
+      AppliedDirective::new("provides", args=[("fields", fields.to_json())]),
+    ),
+  )
 }
 
 ///|
@@ -90,6 +200,12 @@ fn is_federation_internal(name : String) -> Bool {
 /// left out. This is what `_service { sdl }` returns.
 pub fn Federation::sdl(self : Federation, schema : Schema) -> String {
   let mut out = ""
+  if self.v2 {
+    out = out +
+      "extend schema\n  " +
+      applied_directive_sdl(federation_link_directive()) +
+      "\n\n"
+  }
   for obj in schema.types {
     if is_federation_internal(obj.name) {
       continue
@@ -130,6 +246,10 @@ pub fn Federation::sdl(self : Federation, schema : Schema) -> String {
       if str_in(external, f.name) {
         out = out + " @external"
       }
+      out = out +
+        applied_directives_sdl(
+          schema.field_applied_directives(obj.name, f.name),
+        )
       out = out + "\n"
     }
     out = out + "}\n\n"
@@ -201,6 +321,12 @@ pub fn Federation::apply(
   schema : Schema,
   resolvers : Resolvers,
 ) -> Unit {
+  if self.v2 {
+    schema.apply_schema_directive(federation_link_directive())
+  }
+  for fd in self.field_dirs {
+    schema.apply_field_directive(fd.0, fd.1, fd.2)
+  }
   schema.scalar("_Any")
   let service = schema.object("_Service")
   service.field("sdl", NonNull(Scalar("String")))

@@ -663,7 +663,7 @@ fn Exec::execute_field(
     }
     Some(ftype) => {
       let raw = self.resolve_raw(obj, first, parent, path)
-      self.complete(ftype, raw, fields, path) catch {
+      let value = self.complete(ftype, raw, fields, path) catch {
         NullBubble =>
           if ftype is NonNull(_) {
             raise NullBubble
@@ -671,8 +671,40 @@ fn Exec::execute_field(
             Json::null()
           }
       }
+      self.apply_exec_directives(first.directives, value)
     }
   }
+}
+
+///|
+/// Apply any user-registered executable directives on `directives` to a field's
+/// completed `value`, in order: each directive whose definition carries an
+/// `on_field` hook transforms the value, threading the coerced directive
+/// arguments. `@skip` / `@include` are not seen here — they were already resolved
+/// during field collection — so only value-altering custom directives take effect.
+fn Exec::apply_exec_directives(
+  self : Exec,
+  directives : Array[Directive],
+  value : Json,
+) -> Json {
+  let mut out = value
+  for d in directives {
+    match self.schema.directive_def_by_name(d.name) {
+      Some(def) =>
+        match def.on_field {
+          Some(hook) => {
+            let args : Map[String, Json] = Map([])
+            for a in d.arguments {
+              args[a.name] = self.value_to_json(a.value)
+            }
+            out = hook(out, args)
+          }
+          None => ()
+        }
+      None => ()
+    }
+  }
+  out
 }
 
 ///|

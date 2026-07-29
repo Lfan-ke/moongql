@@ -203,6 +203,11 @@ fn Exec::composite_type_json(self : Exec, def : ObjectType) -> Json {
   } else {
     let fs : Array[Json] = []
     for f in def.fields {
+      // @inaccessible fields are present in the subgraph but hidden from the
+      // composed/public schema, so introspection must not report them.
+      if self.schema.field_has_directive(def.name, f.name, "inaccessible") {
+        continue
+      }
       fs.push(self.field_json(f))
     }
     fs.to_json()
@@ -210,6 +215,9 @@ fn Exec::composite_type_json(self : Exec, def : ObjectType) -> Json {
   let input_fields = if def.kind is Input {
     let fs : Array[Json] = []
     for f in def.fields {
+      if self.schema.field_has_directive(def.name, f.name, "inaccessible") {
+        continue
+      }
       fs.push(self.input_value_json(f.name, f.typ))
     }
     fs.to_json()
@@ -320,6 +328,11 @@ fn scalar_type_json(name : String) -> Json {
 ///|
 /// Resolve `__type(name:)` to a fully-materialised `__Type`, or JSON null.
 fn Exec::introspection_type_by_name(self : Exec, name : String) -> Json {
+  // An @inaccessible type is hidden from the composed schema, so `__type(name:)`
+  // reports it as absent.
+  if self.schema.type_has_directive(name, "inaccessible") {
+    return Json::null()
+  }
   match self.schema.type_by_name(name) {
     Some(def) => return self.composite_type_json(def)
     None => ()
@@ -365,7 +378,7 @@ fn Exec::directives_json(self : Exec) -> Json {
       ("isRepeatable", false.to_json()),
     ])
   }
-  [
+  let out : Array[Json] = [
     directive("include", field_locs, bool_if),
     directive("skip", field_locs, bool_if),
     directive(
@@ -373,7 +386,28 @@ fn Exec::directives_json(self : Exec) -> Json {
       ["FIELD_DEFINITION".to_json(), "ENUM_VALUE".to_json()],
       deprecated_reason,
     ),
-  ].to_json()
+  ]
+  // User-registered directives (@upper, @auth, ...) show up alongside the built-ins.
+  for d in self.schema.directive_defs {
+    let locs : Array[Json] = []
+    for l in d.locations {
+      locs.push(l.to_json())
+    }
+    let args : Array[Json] = []
+    for a in d.args {
+      args.push(self.input_value_json(a.0, a.1))
+    }
+    out.push(
+      jobj([
+        ("name", d.name.to_json()),
+        ("description", Json::null()),
+        ("locations", locs.to_json()),
+        ("args", args.to_json()),
+        ("isRepeatable", d.is_repeatable.to_json()),
+      ]),
+    )
+  }
+  out.to_json()
 }
 
 ///|
@@ -383,12 +417,22 @@ fn Exec::directives_json(self : Exec) -> Json {
 fn Exec::introspection_schema(self : Exec) -> Json {
   let types : Array[Json] = []
   for t in self.schema.types {
+    // @inaccessible types are hidden from the composed schema's type list.
+    if self.schema.type_has_directive(t.name, "inaccessible") {
+      continue
+    }
     types.push(self.composite_type_json(t))
   }
   for e in self.schema.enums {
+    if self.schema.type_has_directive(e.name, "inaccessible") {
+      continue
+    }
     types.push(self.enum_type_json(e))
   }
   for u in self.schema.unions {
+    if self.schema.type_has_directive(u.name, "inaccessible") {
+      continue
+    }
     types.push(self.union_type_json(u))
   }
   for s in ["String", "Int", "Float", "Boolean", "ID"] {

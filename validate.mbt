@@ -92,16 +92,82 @@ fn Validator::check_value_vars(
 }
 
 ///|
-/// Validate the arguments and `@skip`/`@include` variables on a directive list.
+/// The valid locations of the directive `name`: a built-in executable directive
+/// (`@skip`/`@include`) or a user-registered one, else `None` for an undefined
+/// directive.
+fn Validator::directive_locations(
+  self : Validator,
+  name : String,
+) -> Array[String]? {
+  match builtin_exec_directive(name) {
+    Some(locs) => Some(locs)
+    None =>
+      match self.schema.directive_def_by_name(name) {
+        Some(d) => Some(d.locations)
+        None => None
+      }
+  }
+}
+
+///|
+/// Whether the directive `name` is repeatable (may appear more than once at one
+/// location). Built-ins are not repeatable.
+fn Validator::directive_repeatable(self : Validator, name : String) -> Bool {
+  match self.schema.directive_def_by_name(name) {
+    Some(d) => d.is_repeatable
+    None => false
+  }
+}
+
+///|
+/// Report duplicate argument names in an argument list (spec §5.4.2, Argument
+/// Uniqueness), for a field or a directive named `owner`.
+fn Validator::check_arg_uniqueness(
+  self : Validator,
+  args : Array[Argument],
+  owner : String,
+) -> Unit {
+  let seen : Array[String] = []
+  for a in args {
+    if str_in(seen, a.name) {
+      self.err("Duplicate argument '" + a.name + "' on '" + owner + "'")
+    }
+    seen.push(a.name)
+  }
+}
+
+///|
+/// Validate a directive list at type-system/executable `location`: every directive
+/// is defined (§5.7.1), used at an allowed location (§5.7.2), and — unless declared
+/// repeatable — appears at most once (§5.7.3); its arguments are unique (§5.4.2)
+/// and their variable references are defined.
 fn Validator::check_directives(
   self : Validator,
   directives : Array[Directive],
   defined : Array[String]?,
+  location : String,
 ) -> Unit {
+  let seen : Array[String] = []
   for d in directives {
+    self.check_arg_uniqueness(d.arguments, "@" + d.name)
     for a in d.arguments {
       self.check_value_vars(a.value, defined)
     }
+    match self.directive_locations(d.name) {
+      None => self.err("Unknown directive '@" + d.name + "'")
+      Some(locs) =>
+        if not(str_in(locs, location)) {
+          self.err("Directive '@" + d.name + "' may not be used on " + location)
+        }
+    }
+    if str_in(seen, d.name) && not(self.directive_repeatable(d.name)) {
+      self.err(
+        "Directive '@" +
+        d.name +
+        "' can only be used once at this location (it is not repeatable)",
+      )
+    }
+    seen.push(d.name)
   }
 }
 
@@ -115,6 +181,7 @@ fn Validator::check_field_args(
   fdef : Field,
   defined : Array[String]?,
 ) -> Unit {
+  self.check_arg_uniqueness(field.arguments, field.name)
   let declared : Array[String] = []
   for a in fdef.args {
     declared.push(a.0)
@@ -173,7 +240,7 @@ fn Validator::check_selection_set(
   for sel in selections {
     match sel {
       FieldSel(f) => {
-        self.check_directives(f.directives, defined)
+        self.check_directives(f.directives, defined, "FIELD")
         if f.name == "__typename" {
           if f.selection_set.length() > 0 {
             self.err("Field '__typename' must not have a selection set")
@@ -249,13 +316,13 @@ fn Validator::check_selection_set(
         }
       }
       FragmentSpreadSel(name, dirs) => {
-        self.check_directives(dirs, defined)
+        self.check_directives(dirs, defined, "FRAGMENT_SPREAD")
         if not(self.fragments.contains(name)) {
           self.err("Unknown fragment '" + name + "'")
         }
       }
       InlineFragmentSel(cond, dirs, sels) => {
-        self.check_directives(dirs, defined)
+        self.check_directives(dirs, defined, "INLINE_FRAGMENT")
         let cond_type = match cond {
           Some(c) => c
           None => type_name
@@ -284,7 +351,7 @@ fn Validator::check_union_selection_set(
   for sel in selections {
     match sel {
       FieldSel(f) => {
-        self.check_directives(f.directives, defined)
+        self.check_directives(f.directives, defined, "FIELD")
         if f.name == "__typename" {
           if f.selection_set.length() > 0 {
             self.err("Field '__typename' must not have a selection set")
@@ -300,13 +367,13 @@ fn Validator::check_union_selection_set(
         }
       }
       FragmentSpreadSel(name, dirs) => {
-        self.check_directives(dirs, defined)
+        self.check_directives(dirs, defined, "FRAGMENT_SPREAD")
         if not(self.fragments.contains(name)) {
           self.err("Unknown fragment '" + name + "'")
         }
       }
       InlineFragmentSel(cond, dirs, sels) => {
-        self.check_directives(dirs, defined)
+        self.check_directives(dirs, defined, "INLINE_FRAGMENT")
         let cond_type = match cond {
           Some(c) => c
           None => union_name
@@ -357,9 +424,20 @@ fn Validator::check_operation(
       return
     }
   }
+  let op_location = match op.operation {
+    Query => "QUERY"
+    Mutation => "MUTATION"
+    Subscription => "SUBSCRIPTION"
+  }
+  self.check_directives(op.directives, None, op_location)
   let defined : Array[String] = []
   for vd in op.variable_definitions {
+    // §5.8.1 Variable Uniqueness: a variable name is defined at most once.
+    if str_in(defined, vd.variable) {
+      self.err("Duplicate variable '$" + vd.variable + "'")
+    }
     defined.push(vd.variable)
+    self.check_directives(vd.directives, Some(defined), "VARIABLE_DEFINITION")
     let base = typeref_base(vd.typ)
     let ok = is_builtin_scalar(base) ||
       self.schema.enum_by_name(base) is Some(_) ||
@@ -378,6 +456,15 @@ fn Validator::check_operation(
     self.check_single_root_field(op)
   }
   self.check_selection_set(root_type, op.selection_set, Some(defined))
+  // §5.8.4 All Variables Used: every defined variable is referenced somewhere in
+  // the operation (directly or through a spread fragment).
+  let used : Array[String] = []
+  self.collect_used_variables(op.selection_set, Map([]), used)
+  for vd in op.variable_definitions {
+    if not(str_in(used, vd.variable)) {
+      self.err("Variable '$" + vd.variable + "' is never used")
+    }
+  }
 }
 
 ///|
@@ -445,7 +532,7 @@ fn Validator::check_fragment(
   self : Validator,
   frag : FragmentDefinition,
 ) -> Unit {
-  self.check_directives(frag.directives, None)
+  self.check_directives(frag.directives, None, "FRAGMENT_DEFINITION")
   if self.type_exists(frag.type_condition) {
     self.check_selection_set(frag.type_condition, frag.selection_set, None)
   } else {
@@ -464,6 +551,9 @@ fn Validator::check_fragment(
 /// empty array means the document is valid and ready to execute).
 pub fn validate(schema : Schema, doc : Document) -> Array[GqlError] {
   let v = { schema, fragments: collect_fragments(doc), errors: [] }
+  v.check_operation_names(doc)
+  v.check_fragment_uniqueness(doc)
+  v.check_fragment_cycles(doc)
   let mut has_op = false
   for def in doc.definitions {
     match def {
@@ -477,5 +567,6 @@ pub fn validate(schema : Schema, doc : Document) -> Array[GqlError] {
   if not(has_op) {
     v.err("Document contains no operations")
   }
+  v.check_fragments_used(doc)
   v.errors
 }

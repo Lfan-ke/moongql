@@ -216,6 +216,63 @@ fed.apply(schema, resolvers)
 
 An extended type declares `extends=true` and lists its `external` fields, which render as `extend type ... @key(...)` with `@external` on the borrowed fields — the shape a gateway composes.
 
+### Federation v2
+
+Pass `v2=true` for a Federation v2 subgraph. Its SDL opens with `extend schema @link(...)` onto the federation spec, and the v2 field directives — `@shareable`, `@inaccessible`, `@override(from:)`, `@requires(fields:)`, `@provides(fields:)` — are declared on fields and rendered into the subgraph SDL:
+
+```moonbit
+let fed = @moongql.Federation::new(v2=true)
+fed.entity(name="Product", key="upc", extends=true, external=["weight"],
+  resolve=(rep, _ctx) => {
+    // @requires(fields: "weight"): the gateway ships the external weight in the
+    // representation, so the resolver can read it to compute the estimate.
+    let weight = read_int(rep, "weight")
+    { "upc": read_str(rep, "upc"), "shippingEstimate": weight * 2 }.to_json()
+  })
+fed.shareable("Product", "name")
+fed.override_("Product", "price", from="legacy")
+fed.requires("Product", "shippingEstimate", fields="weight")
+fed.inaccessible("User", "ssn")   // present in the subgraph, hidden from the composed schema
+fed.apply(schema, resolvers)
+```
+
+`@inaccessible` is the one v2 directive with a runtime effect beyond SDL: the field stays resolvable inside the subgraph but is **hidden from introspection**, so a gateway composing the public schema never sees it.
+
+## Custom directives
+
+Beyond `@skip` / `@include`, a schema can register its own directives. A directive definition carries its valid locations, arguments, repeatability, and an optional `on_field` hook that transforms a resolved field value during execution:
+
+```moonbit
+s.directive("prefix",
+  locations=["FIELD"],
+  args=[("text", @moongql.NonNull(@moongql.Scalar("String")))],
+  on_field=Some((value, args) => match (value, args.get("text")) {
+    (String(x), Some(String(p))) => (p + x).to_json()
+    _ => value
+  }))
+// { greeting @prefix(text: "Hello, ") } -> "Hello, world"
+```
+
+Registered directives show up in `__schema { directives }` beside the built-ins, and the validator accepts them only where they are declared.
+
+## Spec validation
+
+The validator implements a broad slice of the GraphQL spec's §5 validation table. Beyond the per-selection rules (fields and arguments exist, leaf-vs-composite selections, fragment type conditions, defined variables), it enforces the document-level rules:
+
+| Rule | Spec |
+|---|---|
+| Operation name uniqueness | §5.2.1.1 |
+| Lone anonymous operation | §5.2.2.1 |
+| Argument uniqueness | §5.4.2 |
+| Fragment name uniqueness | §5.5.1.1 |
+| Fragments must be used | §5.5.1.4 |
+| Fragment spreads must not form cycles | §5.5.2.2 |
+| Directives are defined | §5.7.1 |
+| Directives are in valid locations | §5.7.2 |
+| Directive repeatability | §5.7.3 |
+| Variable uniqueness | §5.8.1 |
+| All variables used | §5.8.4 |
+
 ## License
 
 Apache-2.0.

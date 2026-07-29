@@ -137,6 +137,12 @@ pub struct Schema {
   query : String
   mut mutation : String?
   mut subscription : String?
+  // Applied directives (directive uses) recorded against a "Type.field" key, a
+  // type name, and the schema itself, plus the definitions of user directives.
+  field_directives : Map[String, Array[AppliedDirective]]
+  type_directives : Map[String, Array[AppliedDirective]]
+  schema_directives : Array[AppliedDirective]
+  directive_defs : Array[DirectiveDef]
 }
 
 ///|
@@ -152,6 +158,10 @@ pub fn Schema::new(query? : String = "Query") -> Schema {
     query,
     mutation: None,
     subscription: None,
+    field_directives: Map([]),
+    type_directives: Map([]),
+    schema_directives: [],
+    directive_defs: [],
   }
 }
 
