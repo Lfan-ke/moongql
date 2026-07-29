@@ -121,6 +121,7 @@ pub(all) struct Field {
   name : String
   args : Array[(String, GqlType)]
   typ : GqlType
+  arg_defaults : Map[String, Json]
 }
 
 pub(all) struct FragmentDefinition {
@@ -151,7 +152,7 @@ pub(all) struct ObjectType {
   interfaces : Array[String]
 }
 pub fn ObjectType::field(Self, String, GqlType) -> Unit
-pub fn ObjectType::field_args(Self, String, Array[(String, GqlType)], GqlType) -> Unit
+pub fn ObjectType::field_args(Self, String, Array[(String, GqlType)], GqlType, defaults? : Array[(String, Json)]) -> Unit
 pub fn ObjectType::field_by_name(Self, String) -> Field?
 pub fn ObjectType::implements(Self, String) -> Unit
 

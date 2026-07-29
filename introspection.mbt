@@ -11,7 +11,7 @@
 fn intro_obj(name : String, fields : Array[(String, GqlType)]) -> ObjectType {
   let fs : Array[Field] = []
   for f in fields {
-    fs.push({ name: f.0, args: [], typ: f.1 })
+    fs.push({ name: f.0, args: [], typ: f.1, arg_defaults: Map([]) })
   }
   { name, fields: fs, kind: Object, interfaces: [] }
 }

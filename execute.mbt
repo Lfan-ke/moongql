@@ -207,6 +207,18 @@ fn Exec::value_to_json(self : Exec, v : Value) -> Json {
 }
 
 ///|
+/// Fill in a field's declared argument defaults for any argument the query left
+/// out. An argument the query supplied — including an explicit `null` — keeps its
+/// value; only a genuinely absent argument takes its default.
+fn apply_arg_defaults(args : Map[String, Json], fdef : Field) -> Unit {
+  for name, default in fdef.arg_defaults {
+    if args.get(name) is None {
+      args[name] = default
+    }
+  }
+}
+
+///|
 /// Coerce a field's argument list to a `name -> JSON` map.
 fn Exec::coerce_args(self : Exec, field : QueryField) -> Map[String, Json] {
   let m : Map[String, Json] = Map([])
@@ -419,7 +431,10 @@ fn Exec::resolve_raw(
   }
   let args = self.coerce_args(field)
   match obj.field_by_name(name) {
-    Some(fdef) => self.apply_input_scalars(args, fdef)
+    Some(fdef) => {
+      apply_arg_defaults(args, fdef)
+      self.apply_input_scalars(args, fdef)
+    }
     None => ()
   }
   match self.resolvers.map.get(obj.name + "." + name) {

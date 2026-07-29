@@ -27,6 +27,7 @@ pub(all) struct Field {
   name : String
   args : Array[(String, GqlType)]
   typ : GqlType
+  arg_defaults : Map[String, Json]
 }
 
 ///|
@@ -74,19 +75,22 @@ pub fn ObjectType::field(
   name : String,
   typ : GqlType,
 ) -> Unit {
-  self.fields.push({ name, args: [], typ })
+  self.fields.push({ name, args: [], typ, arg_defaults: Map([]) })
 }
 
 ///|
 /// Add a field carrying arguments to this type. Each argument is a `(name, type)`
-/// pair and renders as `name(a: A, b: B): RetType`.
+/// pair and renders as `name(a: A, b: B): RetType`. `defaults` supplies default
+/// values for arguments a query may omit (GraphQL field-argument defaults): an
+/// absent argument takes its default, an explicitly-null one does not.
 pub fn ObjectType::field_args(
   self : ObjectType,
   name : String,
   args : Array[(String, GqlType)],
   typ : GqlType,
+  defaults? : Array[(String, Json)] = [],
 ) -> Unit {
-  self.fields.push({ name, args, typ })
+  self.fields.push({ name, args, typ, arg_defaults: Map(defaults) })
 }
 
 ///|
