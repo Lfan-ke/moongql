@@ -439,17 +439,28 @@ fn Validator::check_operation(
     defined.push(vd.variable)
     self.check_directives(vd.directives, Some(defined), "VARIABLE_DEFINITION")
     let base = typeref_base(vd.typ)
-    let ok = is_builtin_scalar(base) ||
+    // §5.8.2 Variables Are Input Types: a variable's type must be a scalar, enum,
+    // or input object — never an output object, interface, or union.
+    let is_input_type = is_builtin_scalar(base) ||
       self.schema.enum_by_name(base) is Some(_) ||
       self.schema.scalar_by_name(base) is Some(_) ||
-      (match self.schema.type_by_name(base) {
-        Some(t) => t.kind is (Input | Object | Interface)
-        None => false
-      })
-    if not(ok) {
-      self.err(
-        "Variable '$" + vd.variable + "' has unknown type '" + base + "'",
-      )
+      (self.schema.type_by_name(base) is Some(t) && t.kind is Input)
+    if !is_input_type {
+      let exists = self.schema.type_by_name(base) is Some(_) ||
+        self.schema.union_by_name(base) is Some(_)
+      if exists {
+        self.err(
+          "Variable '$" +
+          vd.variable +
+          "' cannot be non-input type '" +
+          base +
+          "'",
+        )
+      } else {
+        self.err(
+          "Variable '$" + vd.variable + "' has unknown type '" + base + "'",
+        )
+      }
     }
   }
   if op.operation is Subscription {

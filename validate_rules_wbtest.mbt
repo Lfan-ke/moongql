@@ -183,3 +183,26 @@ test "a valid document passes every rule" {
     "",
   )
 }
+
+///|
+/// §5.8.2 Variables Are Input Types: a scalar variable type is valid, but an output
+/// object type is not, and an unknown type is reported as unknown.
+test "variables are input types" {
+  let s = rules_schema()
+  // A scalar variable used against a matching argument is valid.
+  assert_eq(verr_text(s, "query ($id: ID!) { user(id: $id) { name } }"), "")
+  // The output object type `User` cannot be a variable type.
+  assert_eq(
+    verr_text(s, "query ($u: User) { user(id: \"1\") { name } }").contains(
+      "cannot be non-input type 'User'",
+    ),
+    true,
+  )
+  // A type that does not exist is reported as unknown, not as a non-input type.
+  assert_eq(
+    verr_text(s, "query ($x: Nope) { hello }").contains(
+      "has unknown type 'Nope'",
+    ),
+    true,
+  )
+}
