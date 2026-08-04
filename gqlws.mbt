@@ -270,7 +270,9 @@ fn operation_type_of(
 ) -> Result[OperationType, Array[GqlError]] {
   let doc = parse(query) catch {
     GqlSyntaxError(m, line, col) =>
-      return Err([{ message: m, path: [], locations: [(line, col)] }])
+      return Err([
+        { message: m, path: [], locations: [(line, col)], extensions: Map([]) },
+      ])
   }
   let verrors = validate(schema, doc)
   if verrors.length() > 0 {

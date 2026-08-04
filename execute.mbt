@@ -38,6 +38,7 @@ pub fn ResolveInfo::arg(self : ResolveInfo, name : String) -> Json {
 /// `errors` list with the field's response path.
 pub(all) suberror ResolverError {
   ResolverError(String)
+  ResolverErrorExt(String, Map[String, Json])
 }
 
 ///|
@@ -73,12 +74,13 @@ pub(all) struct GqlError {
   message : String
   path : Array[Json]
   locations : Array[(Int, Int)]
+  extensions : Map[String, Json]
 }
 
 ///|
 /// Build an error carrying only a message (used for request-level errors).
 fn GqlError::msg(message : String) -> GqlError {
-  { message, path: [], locations: [] }
+  { message, path: [], locations: [], extensions: Map([]) }
 }
 
 ///|
@@ -95,6 +97,11 @@ fn GqlError::to_json(self : GqlError) -> Json {
   }
   if self.path.length() > 0 {
     entries.push(("path", self.path.to_json()))
+  }
+  // A resolver-supplied `extensions` map (← GraphQL spec §7.1.2), emitted only
+  // when non-empty.
+  if !self.extensions.is_empty() {
+    entries.push(("extensions", self.extensions.to_json()))
   }
   jobj(entries)
 }
@@ -150,7 +157,19 @@ priv struct Exec {
 ///|
 /// Record a field error at `path`.
 fn Exec::add_error(self : Exec, message : String, path : Array[Json]) -> Unit {
-  self.errors.push({ message, path, locations: [] })
+  self.errors.push({ message, path, locations: [], extensions: Map([]) })
+}
+
+///|
+/// Record a field error at `path` carrying a resolver-supplied `extensions` map
+/// (← GraphQL spec §7.1.2).
+fn Exec::add_error_ext(
+  self : Exec,
+  message : String,
+  path : Array[Json],
+  extensions : Map[String, Json],
+) -> Unit {
+  self.errors.push({ message, path, locations: [], extensions })
 }
 
 ///|
@@ -443,6 +462,10 @@ fn Exec::resolve_raw(
       resolver(info) catch {
         ResolverError(m) => {
           self.add_error(m, path)
+          Json::null()
+        }
+        ResolverErrorExt(m, ext) => {
+          self.add_error_ext(m, path, ext)
           Json::null()
         }
       }
@@ -941,7 +964,7 @@ pub fn execute(
   let doc = parse(query) catch {
     GqlSyntaxError(m, line, col) =>
       return build_response(None, [
-        { message: m, path: [], locations: [(line, col)] },
+        { message: m, path: [], locations: [(line, col)], extensions: Map([]) },
       ])
   }
   let verrors = validate(schema, doc)

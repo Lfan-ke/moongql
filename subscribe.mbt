@@ -128,7 +128,9 @@ pub fn create_source_event_stream(
 ) -> SubscriptionResult {
   let doc = parse(query) catch {
     GqlSyntaxError(m, line, col) =>
-      return RequestError([{ message: m, path: [], locations: [(line, col)] }])
+      return RequestError([
+        { message: m, path: [], locations: [(line, col)], extensions: Map([]) },
+      ])
   }
   let verrors = validate(schema, doc)
   if verrors.length() > 0 {
@@ -209,6 +211,10 @@ pub fn create_source_event_stream(
   }
   let events = source(info) catch {
     ResolverError(m) => return RequestError([GqlError::msg(m)])
+    ResolverErrorExt(m, ext) =>
+      return RequestError([
+        { message: m, path: [], locations: [], extensions: ext },
+      ])
   }
   let out : Array[Json] = []
   for ev in events {
