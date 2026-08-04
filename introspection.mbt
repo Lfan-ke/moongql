@@ -17,6 +17,7 @@ fn intro_obj(name : String, fields : Array[(String, GqlType)]) -> ObjectType {
       typ: f.1,
       arg_defaults: Map([]),
       deprecation_reason: None,
+      description: None,
     })
   }
   { name, fields: fs, kind: Object, interfaces: [] }
@@ -195,7 +196,7 @@ fn Exec::field_json(self : Exec, f : Field) -> Json {
   }
   jobj([
     ("name", f.name.to_json()),
-    ("description", Json::null()),
+    ("description", reason_json(f.description)),
     ("args", args.to_json()),
     ("type", self.type_ref_json(f.typ)),
     ("isDeprecated", (f.deprecation_reason is Some(_)).to_json()),

@@ -29,6 +29,7 @@ pub(all) struct Field {
   typ : GqlType
   arg_defaults : Map[String, Json]
   deprecation_reason : String?
+  description : String?
 }
 
 ///|
@@ -76,6 +77,7 @@ pub fn ObjectType::field(
   name : String,
   typ : GqlType,
   deprecation_reason? : String,
+  description? : String,
 ) -> Unit {
   self.fields.push({
     name,
@@ -83,6 +85,7 @@ pub fn ObjectType::field(
     typ,
     arg_defaults: Map([]),
     deprecation_reason,
+    description,
   })
 }
 
@@ -98,6 +101,7 @@ pub fn ObjectType::field_args(
   typ : GqlType,
   defaults? : Array[(String, Json)] = [],
   deprecation_reason? : String,
+  description? : String,
 ) -> Unit {
   self.fields.push({
     name,
@@ -105,6 +109,7 @@ pub fn ObjectType::field_args(
     typ,
     arg_defaults: Map(defaults),
     deprecation_reason,
+    description,
   })
 }
 
