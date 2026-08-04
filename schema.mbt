@@ -151,6 +151,7 @@ pub(all) struct ScalarType {
   name : String
   serialize : (Json) -> Json
   parse_value : (Json) -> Json
+  spec_url : String?
 }
 
 ///|
@@ -259,8 +260,9 @@ pub fn Schema::scalar(
   name : String,
   serialize? : (Json) -> Json = fn(x) { x },
   parse_value? : (Json) -> Json = fn(x) { x },
+  spec_url? : String,
 ) -> Unit {
-  self.scalars.push({ name, serialize, parse_value })
+  self.scalars.push({ name, serialize, parse_value, spec_url })
 }
 
 ///|

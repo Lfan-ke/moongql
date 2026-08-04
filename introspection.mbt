@@ -52,6 +52,7 @@ fn introspection_type_def(name : String) -> ObjectType? {
         ("enumValues", ListOf(NonNull(Named("__EnumValue")))),
         ("inputFields", ListOf(NonNull(Named("__InputValue")))),
         ("ofType", Named("__Type")),
+        ("specifiedByURL", t),
       ])
       // `fields` and `enumValues` take `includeDeprecated: Boolean = false` so a
       // client can opt deprecated members back into the result (spec §4.5).
@@ -362,7 +363,7 @@ fn Exec::union_type_json(self : Exec, def : UnionType) -> Json {
 
 ///|
 /// Materialise the full `__Type` for a built-in or custom scalar.
-fn scalar_type_json(name : String) -> Json {
+fn scalar_type_json(name : String, spec_url? : String) -> Json {
   jobj([
     ("kind", "SCALAR".to_json()),
     ("name", name.to_json()),
@@ -373,6 +374,9 @@ fn scalar_type_json(name : String) -> Json {
     ("enumValues", Json::null()),
     ("inputFields", Json::null()),
     ("ofType", Json::null()),
+    // The custom-scalar spec URL (← the `@specifiedBy` directive), null for the
+    // built-in scalars.
+    ("specifiedByURL", reason_json(spec_url)),
   ])
 }
 
@@ -396,8 +400,12 @@ fn Exec::introspection_type_by_name(self : Exec, name : String) -> Json {
     Some(def) => return self.union_type_json(def)
     None => ()
   }
-  if is_builtin_scalar(name) || self.schema.scalar_by_name(name) is Some(_) {
+  if is_builtin_scalar(name) {
     return scalar_type_json(name)
+  }
+  match self.schema.scalar_by_name(name) {
+    Some(sc) => return scalar_type_json(name, spec_url?=sc.spec_url)
+    None => ()
   }
   Json::null()
 }
@@ -490,7 +498,7 @@ fn Exec::introspection_schema(self : Exec) -> Json {
     types.push(scalar_type_json(s))
   }
   for sc in self.schema.scalars {
-    types.push(scalar_type_json(sc.name))
+    types.push(scalar_type_json(sc.name, spec_url?=sc.spec_url))
   }
   let mutation = match self.schema.mutation {
     Some(m) => self.named_type_ref(m)
