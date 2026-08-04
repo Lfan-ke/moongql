@@ -100,6 +100,7 @@ pub(all) struct EntityDef {
 pub(all) struct EnumType {
   name : String
   values : Array[String]
+  deprecations : Map[String, String]
 }
 
 pub struct Federation {
@@ -122,6 +123,7 @@ pub(all) struct Field {
   args : Array[(String, GqlType)]
   typ : GqlType
   arg_defaults : Map[String, Json]
+  deprecation_reason : String?
 }
 
 pub(all) struct FragmentDefinition {
@@ -151,8 +153,8 @@ pub(all) struct ObjectType {
   kind : TypeKind
   interfaces : Array[String]
 }
-pub fn ObjectType::field(Self, String, GqlType) -> Unit
-pub fn ObjectType::field_args(Self, String, Array[(String, GqlType)], GqlType, defaults? : Array[(String, Json)]) -> Unit
+pub fn ObjectType::field(Self, String, GqlType, deprecation_reason? : String) -> Unit
+pub fn ObjectType::field_args(Self, String, Array[(String, GqlType)], GqlType, defaults? : Array[(String, Json)], deprecation_reason? : String) -> Unit
 pub fn ObjectType::field_by_name(Self, String) -> Field?
 pub fn ObjectType::implements(Self, String) -> Unit
 
@@ -216,7 +218,7 @@ pub fn Schema::apply_schema_directive(Self, AppliedDirective) -> Unit
 pub fn Schema::apply_type_directive(Self, String, AppliedDirective) -> Unit
 pub fn Schema::directive(Self, String, locations~ : Array[String], args? : Array[(String, GqlType)], is_repeatable? : Bool, on_field? : ((Json, Map[String, Json]) -> Json)?) -> Unit
 pub fn Schema::directive_def_by_name(Self, String) -> DirectiveDef?
-pub fn Schema::enum_(Self, String, Array[String]) -> Unit
+pub fn Schema::enum_(Self, String, Array[String], deprecated? : Array[(String, String)]) -> Unit
 pub fn Schema::enum_by_name(Self, String) -> EnumType?
 pub fn Schema::field_applied_directives(Self, String, String) -> Array[AppliedDirective]
 pub fn Schema::field_has_directive(Self, String, String, String) -> Bool
@@ -326,4 +328,3 @@ pub type EntityResolver = (Json, Json) -> Json raise ResolverError
 pub type FieldDirectiveHook = (Json, Map[String, Json]) -> Json
 
 // Traits
-

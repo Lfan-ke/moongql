@@ -460,7 +460,7 @@ fn Exec::resolve_raw(
           return self.introspection_type_by_name(tn)
         }
       }
-      match parent {
+      let raw = match parent {
         Object(m) =>
           match m.get(name) {
             Some(v) => v
@@ -468,6 +468,13 @@ fn Exec::resolve_raw(
           }
         _ => Json::null()
       }
+      if obj.name == "__Type" && (name == "fields" || name == "enumValues") {
+        return filter_deprecated(
+          raw,
+          args.get("includeDeprecated") is Some(True),
+        )
+      }
+      raw
     }
   }
 }

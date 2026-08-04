@@ -28,6 +28,7 @@ pub(all) struct Field {
   args : Array[(String, GqlType)]
   typ : GqlType
   arg_defaults : Map[String, Json]
+  deprecation_reason : String?
 }
 
 ///|
@@ -74,8 +75,15 @@ pub fn ObjectType::field(
   self : ObjectType,
   name : String,
   typ : GqlType,
+  deprecation_reason? : String,
 ) -> Unit {
-  self.fields.push({ name, args: [], typ, arg_defaults: Map([]) })
+  self.fields.push({
+    name,
+    args: [],
+    typ,
+    arg_defaults: Map([]),
+    deprecation_reason,
+  })
 }
 
 ///|
@@ -89,8 +97,15 @@ pub fn ObjectType::field_args(
   args : Array[(String, GqlType)],
   typ : GqlType,
   defaults? : Array[(String, Json)] = [],
+  deprecation_reason? : String,
 ) -> Unit {
-  self.fields.push({ name, args, typ, arg_defaults: Map(defaults) })
+  self.fields.push({
+    name,
+    args,
+    typ,
+    arg_defaults: Map(defaults),
+    deprecation_reason,
+  })
 }
 
 ///|
@@ -101,10 +116,12 @@ pub fn ObjectType::implements(self : ObjectType, name : String) -> Unit {
 }
 
 ///|
-/// A GraphQL enum type: a name and an ordered list of value names.
+/// A GraphQL enum type: a name, an ordered list of value names, and each value's
+/// `@deprecated` reason keyed by value name (mirroring `Field.arg_defaults`).
 pub(all) struct EnumType {
   name : String
   values : Array[String]
+  deprecations : Map[String, String]
 }
 
 ///|
@@ -300,13 +317,16 @@ pub fn Schema::interface(self : Schema, name : String) -> ObjectType {
 
 ///|
 /// Declare an enum type with an ordered set of value names. Renders as
-/// `enum Name { A B }` with one value per line.
+/// `enum Name { A B }` with one value per line. `deprecated` marks individual
+/// values `@deprecated`, each a `(value, reason)` pair (as `field_args` takes
+/// argument defaults), surfacing in introspection's `isDeprecated`.
 pub fn Schema::enum_(
   self : Schema,
   name : String,
   values : Array[String],
+  deprecated? : Array[(String, String)] = [],
 ) -> Unit {
-  self.enums.push({ name, values })
+  self.enums.push({ name, values, deprecations: Map(deprecated) })
 }
 
 ///|

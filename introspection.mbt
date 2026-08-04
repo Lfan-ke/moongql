@@ -11,7 +11,13 @@
 fn intro_obj(name : String, fields : Array[(String, GqlType)]) -> ObjectType {
   let fs : Array[Field] = []
   for f in fields {
-    fs.push({ name: f.0, args: [], typ: f.1, arg_defaults: Map([]) })
+    fs.push({
+      name: f.0,
+      args: [],
+      typ: f.1,
+      arg_defaults: Map([]),
+      deprecation_reason: None,
+    })
   }
   { name, fields: fs, kind: Object, interfaces: [] }
 }
@@ -34,20 +40,28 @@ fn introspection_type_def(name : String) -> ObjectType? {
           ("directives", NonNull(ListOf(NonNull(Named("__Directive"))))),
         ]),
       )
-    "__Type" =>
-      Some(
-        intro_obj("__Type", [
-          ("kind", NonNull(Named("__TypeKind"))),
-          ("name", t),
-          ("description", t),
-          ("fields", ListOf(NonNull(Named("__Field")))),
-          ("interfaces", ListOf(NonNull(Named("__Type")))),
-          ("possibleTypes", ListOf(NonNull(Named("__Type")))),
-          ("enumValues", ListOf(NonNull(Named("__EnumValue")))),
-          ("inputFields", ListOf(NonNull(Named("__InputValue")))),
-          ("ofType", Named("__Type")),
-        ]),
-      )
+    "__Type" => {
+      let ty = intro_obj("__Type", [
+        ("kind", NonNull(Named("__TypeKind"))),
+        ("name", t),
+        ("description", t),
+        ("fields", ListOf(NonNull(Named("__Field")))),
+        ("interfaces", ListOf(NonNull(Named("__Type")))),
+        ("possibleTypes", ListOf(NonNull(Named("__Type")))),
+        ("enumValues", ListOf(NonNull(Named("__EnumValue")))),
+        ("inputFields", ListOf(NonNull(Named("__InputValue")))),
+        ("ofType", Named("__Type")),
+      ])
+      // `fields` and `enumValues` take `includeDeprecated: Boolean = false` so a
+      // client can opt deprecated members back into the result (spec §4.5).
+      for fname in ["fields", "enumValues"] {
+        if ty.field_by_name(fname) is Some(f) {
+          f.args.push(("includeDeprecated", Scalar("Boolean")))
+          f.arg_defaults["includeDeprecated"] = false.to_json()
+        }
+      }
+      Some(ty)
+    }
     "__Field" =>
       Some(
         intro_obj("__Field", [
@@ -184,9 +198,44 @@ fn Exec::field_json(self : Exec, f : Field) -> Json {
     ("description", Json::null()),
     ("args", args.to_json()),
     ("type", self.type_ref_json(f.typ)),
-    ("isDeprecated", false.to_json()),
-    ("deprecationReason", Json::null()),
+    ("isDeprecated", (f.deprecation_reason is Some(_)).to_json()),
+    ("deprecationReason", reason_json(f.deprecation_reason)),
   ])
+}
+
+///|
+/// A `deprecationReason` value: the reason string, or JSON null when not set.
+fn reason_json(reason : String?) -> Json {
+  match reason {
+    Some(r) => r.to_json()
+    None => Json::null()
+  }
+}
+
+///|
+/// Filter a materialised `__Field` / `__EnumValue` list for a `fields` /
+/// `enumValues` selection: unless `include` is set, drop entries carrying
+/// `isDeprecated: true` (graphql-js `includeDeprecated` behaviour).
+fn filter_deprecated(items : Json, included : Bool) -> Json {
+  if included {
+    return items
+  }
+  match items {
+    Array(arr) => {
+      let out : Array[Json] = []
+      for it in arr {
+        let deprecated = match it {
+          Object(m) => m.get("isDeprecated") is Some(True)
+          _ => false
+        }
+        if not(deprecated) {
+          out.push(it)
+        }
+      }
+      out.to_json()
+    }
+    _ => items
+  }
 }
 
 ///|
@@ -266,12 +315,13 @@ fn Exec::enum_type_json(self : Exec, def : EnumType) -> Json {
   ignore(self)
   let vals : Array[Json] = []
   for v in def.values {
+    let reason = def.deprecations.get(v)
     vals.push(
       jobj([
         ("name", v.to_json()),
         ("description", Json::null()),
-        ("isDeprecated", false.to_json()),
-        ("deprecationReason", Json::null()),
+        ("isDeprecated", (reason is Some(_)).to_json()),
+        ("deprecationReason", reason_json(reason)),
       ]),
     )
   }
