@@ -317,8 +317,20 @@ fn Validator::check_selection_set(
       }
       FragmentSpreadSel(name, dirs) => {
         self.check_directives(dirs, defined, "FRAGMENT_SPREAD")
-        if not(self.fragments.contains(name)) {
-          self.err("Unknown fragment '" + name + "'")
+        match self.fragments.get(name) {
+          Some(frag) =>
+            if not(self.types_overlap(type_name, frag.type_condition)) {
+              self.err(
+                "Fragment '" +
+                name +
+                "' cannot be spread here as objects of type '" +
+                type_name +
+                "' can never be of type '" +
+                frag.type_condition +
+                "'",
+              )
+            }
+          None => self.err("Unknown fragment '" + name + "'")
         }
       }
       InlineFragmentSel(cond, dirs, sels) => {
@@ -328,6 +340,15 @@ fn Validator::check_selection_set(
           None => type_name
         }
         if self.type_exists(cond_type) {
+          if not(self.types_overlap(type_name, cond_type)) {
+            self.err(
+              "Fragment cannot be spread here as objects of type '" +
+              type_name +
+              "' can never be of type '" +
+              cond_type +
+              "'",
+            )
+          }
           self.check_selection_set(cond_type, sels, defined)
         } else {
           self.err("Inline fragment on unknown type '" + cond_type + "'")
@@ -394,6 +415,55 @@ fn Validator::check_union_selection_set(
       }
     }
   }
+}
+
+///|
+/// The concrete object types a value of `name` could be at runtime (← the spec's
+/// possible types): a union's members, an interface's implementers, or the type
+/// itself for an object or leaf.
+fn Validator::possible_types(self : Validator, name : String) -> Array[String] {
+  match self.schema.union_by_name(name) {
+    Some(u) => u.members
+    None => {
+      let impls : Array[String] = []
+      for t in self.schema.types {
+        if t.kind is Object {
+          for i in t.interfaces {
+            if i == name {
+              impls.push(t.name)
+              break
+            }
+          }
+        }
+      }
+      if impls.is_empty() {
+        [name]
+      } else {
+        impls
+      }
+    }
+  }
+}
+
+///|
+/// Whether a fragment on `frag_type` can ever apply within a selection on
+/// `parent` (← the spec's `DoTypesOverlap`, §5.5.2.3): their possible concrete
+/// types must intersect.
+fn Validator::types_overlap(
+  self : Validator,
+  parent : String,
+  frag_type : String,
+) -> Bool {
+  if parent == frag_type {
+    return true
+  }
+  let pb = self.possible_types(frag_type)
+  for x in self.possible_types(parent) {
+    if pb.contains(x) {
+      return true
+    }
+  }
+  false
 }
 
 ///|
