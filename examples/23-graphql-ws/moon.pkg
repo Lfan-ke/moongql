@@ -1,0 +1,6 @@
+import {
+  "Lfan-ke/moongql",
+  "Lfan-ke/moonasgi",
+}
+
+pkgtype(kind: "executable")

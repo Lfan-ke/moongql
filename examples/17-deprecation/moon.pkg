@@ -1,0 +1,5 @@
+import {
+  "Lfan-ke/moongql",
+}
+
+pkgtype(kind: "executable")

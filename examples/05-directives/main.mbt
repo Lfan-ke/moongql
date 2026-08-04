@@ -1,0 +1,28 @@
+///|
+/// The built-in `@skip` / `@include` directives. Guarding a field on a boolean
+/// variable makes one query text return different shapes: `@include(if: false)`
+/// drops the guarded field, `@skip(if: true)` drops it too.
+///
+///     moon run examples/05-directives
+#coverage.skip
+fn main {
+  let s = @moongql.Schema::new()
+  let q = s.object("Query")
+  q.field("id", @moongql.NonNull(@moongql.Scalar("ID")))
+  q.field("name", @moongql.NonNull(@moongql.Scalar("String")))
+  q.field("age", @moongql.Scalar("Int"))
+  let r = @moongql.Resolvers::new()
+  r.field("Query", "id", fn(_info) { "1".to_json() })
+  r.field("Query", "name", fn(_info) { "lfanke".to_json() })
+  r.field("Query", "age", fn(_info) { (233).to_json() })
+  let query =
+    #|query ($withAge: Boolean!, $hideName: Boolean!) {
+    #|  id
+    #|  name @skip(if: $hideName)
+    #|  age @include(if: $withAge)
+    #|}
+  let shown : Map[String, Json] = { "withAge": true, "hideName": false }
+  println(@moongql.execute(s, r, query, variables=shown).stringify())
+  let hidden : Map[String, Json] = { "withAge": false, "hideName": true }
+  println(@moongql.execute(s, r, query, variables=hidden).stringify())
+}
