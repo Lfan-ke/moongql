@@ -128,6 +128,8 @@ pub(all) struct EnumType {
   name : String
   values : Array[String]
   deprecations : Map[String, String]
+  description : String?
+  value_descriptions : Map[String, String]
 }
 
 ///|
@@ -361,8 +363,16 @@ pub fn Schema::enum_(
   name : String,
   values : Array[String],
   deprecated? : Array[(String, String)] = [],
+  description? : String,
+  descriptions? : Array[(String, String)] = [],
 ) -> Unit {
-  self.enums.push({ name, values, deprecations: Map(deprecated) })
+  self.enums.push({
+    name,
+    values,
+    deprecations: Map(deprecated),
+    description,
+    value_descriptions: Map(descriptions),
+  })
 }
 
 ///|

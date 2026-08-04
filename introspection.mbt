@@ -320,7 +320,7 @@ fn Exec::enum_type_json(self : Exec, def : EnumType) -> Json {
     vals.push(
       jobj([
         ("name", v.to_json()),
-        ("description", Json::null()),
+        ("description", reason_json(def.value_descriptions.get(v))),
         ("isDeprecated", (reason is Some(_)).to_json()),
         ("deprecationReason", reason_json(reason)),
       ]),
@@ -329,7 +329,7 @@ fn Exec::enum_type_json(self : Exec, def : EnumType) -> Json {
   jobj([
     ("kind", "ENUM".to_json()),
     ("name", def.name.to_json()),
-    ("description", Json::null()),
+    ("description", reason_json(def.description)),
     ("fields", Json::null()),
     ("interfaces", Json::null()),
     ("possibleTypes", Json::null()),
