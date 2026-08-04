@@ -68,6 +68,7 @@ pub(all) struct ObjectType {
   fields : Array[Field]
   kind : TypeKind
   interfaces : Array[String]
+  description : String?
 }
 
 ///|
@@ -296,8 +297,18 @@ pub fn GqlType::named_base(self : GqlType) -> String {
 ///|
 /// Declare an output object type and return it so fields can be added. The type
 /// is registered by reference, so later `.field(...)` calls are seen.
-pub fn Schema::object(self : Schema, name : String) -> ObjectType {
-  let o : ObjectType = { name, fields: [], kind: Object, interfaces: [] }
+pub fn Schema::object(
+  self : Schema,
+  name : String,
+  description? : String,
+) -> ObjectType {
+  let o : ObjectType = {
+    name,
+    fields: [],
+    kind: Object,
+    interfaces: [],
+    description,
+  }
   self.types.push(o)
   o
 }
@@ -305,8 +316,18 @@ pub fn Schema::object(self : Schema, name : String) -> ObjectType {
 ///|
 /// Declare an input object type and return it so fields can be added. Renders as
 /// `input Name { ... }`.
-pub fn Schema::input(self : Schema, name : String) -> ObjectType {
-  let o : ObjectType = { name, fields: [], kind: Input, interfaces: [] }
+pub fn Schema::input(
+  self : Schema,
+  name : String,
+  description? : String,
+) -> ObjectType {
+  let o : ObjectType = {
+    name,
+    fields: [],
+    kind: Input,
+    interfaces: [],
+    description,
+  }
   self.types.push(o)
   o
 }
@@ -314,8 +335,18 @@ pub fn Schema::input(self : Schema, name : String) -> ObjectType {
 ///|
 /// Declare an interface type and return it so fields can be added. Renders as
 /// `interface Name { ... }`; objects declare conformance via `implements`.
-pub fn Schema::interface(self : Schema, name : String) -> ObjectType {
-  let o : ObjectType = { name, fields: [], kind: Interface, interfaces: [] }
+pub fn Schema::interface(
+  self : Schema,
+  name : String,
+  description? : String,
+) -> ObjectType {
+  let o : ObjectType = {
+    name,
+    fields: [],
+    kind: Interface,
+    interfaces: [],
+    description,
+  }
   self.types.push(o)
   o
 }

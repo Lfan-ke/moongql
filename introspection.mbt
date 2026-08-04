@@ -20,7 +20,7 @@ fn intro_obj(name : String, fields : Array[(String, GqlType)]) -> ObjectType {
       description: None,
     })
   }
-  { name, fields: fs, kind: Object, interfaces: [] }
+  { name, fields: fs, kind: Object, interfaces: [], description: None }
 }
 
 ///|
@@ -300,7 +300,7 @@ fn Exec::composite_type_json(self : Exec, def : ObjectType) -> Json {
   jobj([
     ("kind", kind.to_json()),
     ("name", def.name.to_json()),
-    ("description", Json::null()),
+    ("description", reason_json(def.description)),
     ("fields", fields),
     ("interfaces", interfaces),
     ("possibleTypes", possible_types),

@@ -28,3 +28,17 @@ test "field description surfaces in introspection __Field.description" {
   // A field with no description reports `null`, per the introspection schema.
   assert_eq(plain_desc, Some(Json::null()))
 }
+
+///|
+test "type description surfaces in introspection __Type.description" {
+  let schema = Schema::new(query="Query")
+  let query = schema.object("Query", description="the root query type")
+  query.field("hero", Scalar("String"))
+  let q =
+    #|{ __type(name: "Query") { name description } }
+  let res = execute(schema, Resolvers::new(), q)
+  guard res is Object(m) else { fail("response should be an object") }
+  guard m.get("data") is Some(Object(data)) else { fail("data") }
+  guard data.get("__type") is Some(Object(t)) else { fail("__type") }
+  assert_eq(t.get("description"), Some("the root query type".to_json()))
+}
