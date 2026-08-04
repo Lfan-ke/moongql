@@ -191,6 +191,16 @@ fn Validator::check_field_args(
       self.err(
         "Unknown argument '" + a.name + "' on field '" + field.name + "'",
       )
+    } else {
+      for da in fdef.args {
+        if da.0 == a.name {
+          self.check_value_type(
+            a.value,
+            da.1,
+            "argument '" + a.name + "' of field '" + field.name + "'",
+          )
+        }
+      }
     }
     self.check_value_vars(a.value, defined)
   }
@@ -212,6 +222,212 @@ fn Validator::check_field_args(
         )
       }
     }
+  }
+}
+
+///|
+/// A human-readable name for the kind of a literal input value, used in
+/// §5.6.1 type-mismatch messages ("... found a string.").
+fn value_desc(v : Value) -> String {
+  match v {
+    Variable(n) => "$" + n
+    IntValue(_) => "an integer"
+    FloatValue(_) => "a float"
+    StringValue(_, _) => "a string"
+    BooleanValue(_) => "a boolean"
+    NullValue => "null"
+    EnumValue(e) => "enum value " + e
+    ListValue(_) => "a list"
+    ObjectValue(_) => "an object"
+  }
+}
+
+///|
+/// Reproject a query-grammar `TypeRef` onto the schema builder's `GqlType` so a
+/// variable's default value can flow through the same §5.6.1 checker as a
+/// field-argument literal. `NamedType` becomes `Named` (the `Scalar` sugar only
+/// exists on the builder side, and the value checker treats both identically).
+fn typeref_to_gql(t : TypeRef) -> GqlType {
+  match t {
+    NamedType(n) => Named(n)
+    ListType(inner) => ListOf(typeref_to_gql(inner))
+    NonNullType(inner) => NonNull(typeref_to_gql(inner))
+  }
+}
+
+///|
+/// Values of Correct Type (spec §5.6.1): a literal input value must be coercible
+/// to its expected type. Variables are skipped here (their compatibility is a
+/// separate rule); `null` is accepted at any nullable position but rejected under
+/// a non-null wrapper. List positions accept either a list literal (each element
+/// checked against the item type) or a single value (list input coercion).
+fn Validator::check_value_type(
+  self : Validator,
+  v : Value,
+  t : GqlType,
+  ctx : String,
+) -> Unit {
+  if v is Variable(_) {
+    return
+  }
+  match t {
+    NonNull(inner) =>
+      if v is NullValue {
+        self.err(
+          ctx + " of non-null type '" + type_sdl(t) + "' must not be null.",
+        )
+      } else {
+        self.check_value_type(v, inner, ctx)
+      }
+    ListOf(inner) =>
+      match v {
+        NullValue => ()
+        ListValue(items) =>
+          for it in items {
+            self.check_value_type(it, inner, ctx)
+          }
+        _ => self.check_value_type(v, inner, ctx)
+      }
+    Scalar(name) | Named(name) =>
+      if not(v is NullValue) {
+        self.check_named_value(v, name, ctx)
+      }
+  }
+}
+
+///|
+/// Check a non-null literal against a named leaf/input type: the five built-in
+/// scalars by JSON shape, enums by membership, input objects field-by-field.
+/// Custom scalars and output types accept anything (their coercion is user code).
+fn Validator::check_named_value(
+  self : Validator,
+  v : Value,
+  name : String,
+  ctx : String,
+) -> Unit {
+  match name {
+    "Int" =>
+      if not(v is IntValue(_)) {
+        self.err(ctx + " expected type 'Int', found " + value_desc(v) + ".")
+      }
+    "Float" =>
+      match v {
+        IntValue(_) | FloatValue(_) => ()
+        _ =>
+          self.err(ctx + " expected type 'Float', found " + value_desc(v) + ".")
+      }
+    "String" =>
+      if not(v is StringValue(_, _)) {
+        self.err(ctx + " expected type 'String', found " + value_desc(v) + ".")
+      }
+    "Boolean" =>
+      if not(v is BooleanValue(_)) {
+        self.err(ctx + " expected type 'Boolean', found " + value_desc(v) + ".")
+      }
+    "ID" =>
+      match v {
+        StringValue(_, _) | IntValue(_) => ()
+        _ => self.err(ctx + " expected type 'ID', found " + value_desc(v) + ".")
+      }
+    _ =>
+      match self.schema.enum_by_name(name) {
+        Some(en) =>
+          match v {
+            EnumValue(ev) =>
+              if not(str_in(en.values, ev)) {
+                self.err(
+                  ctx +
+                  ": value '" +
+                  ev +
+                  "' does not exist in enum '" +
+                  name +
+                  "'.",
+                )
+              }
+            _ =>
+              self.err(
+                ctx +
+                " expected enum '" +
+                name +
+                "', found " +
+                value_desc(v) +
+                ".",
+              )
+          }
+        None =>
+          match self.schema.type_by_name(name) {
+            Some(td) =>
+              if td.kind == Input {
+                self.check_input_value(v, td, ctx)
+              }
+            None => ()
+          }
+      }
+  }
+}
+
+///|
+/// Check a literal against an input object type: it must be an object literal,
+/// every provided field must be declared, each field's value must match the
+/// field type, and every non-null field must be supplied.
+fn Validator::check_input_value(
+  self : Validator,
+  v : Value,
+  td : ObjectType,
+  ctx : String,
+) -> Unit {
+  match v {
+    ObjectValue(fields) => {
+      for kv in fields {
+        let (fname, fval) = kv
+        match td.field_by_name(fname) {
+          Some(fdef) =>
+            self.check_value_type(
+              fval,
+              fdef.typ,
+              "field '" + td.name + "." + fname + "'",
+            )
+          None =>
+            self.err(
+              "Field '" +
+              fname +
+              "' is not defined by input type '" +
+              td.name +
+              "'.",
+            )
+        }
+      }
+      for fdef in td.fields {
+        if fdef.typ is NonNull(_) {
+          let mut present = false
+          for kv in fields {
+            if kv.0 == fdef.name {
+              present = true
+            }
+          }
+          if not(present) {
+            self.err(
+              "Field '" +
+              td.name +
+              "." +
+              fdef.name +
+              "' of required type '" +
+              type_sdl(fdef.typ) +
+              "' was not provided.",
+            )
+          }
+        }
+      }
+    }
+    _ =>
+      self.err(
+        ctx +
+        " expected input object '" +
+        td.name +
+        "', found " +
+        value_desc(v) +
+        ".",
+      )
   }
 }
 
@@ -531,6 +747,16 @@ fn Validator::check_operation(
           "Variable '$" + vd.variable + "' has unknown type '" + base + "'",
         )
       }
+    }
+    // §5.6.1 also governs a variable's default value, a constant literal.
+    match vd.default_value {
+      Some(dv) =>
+        self.check_value_type(
+          dv,
+          typeref_to_gql(vd.typ),
+          "variable '$" + vd.variable + "'",
+        )
+      None => ()
     }
   }
   if op.operation is Subscription {
