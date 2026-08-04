@@ -1,7 +1,5 @@
 import {
-  "Lfan-ke/moongql" @moongql,
+  "Lfan-ke/moongql",
 }
 
-options(
-  "is-main": true,
-)
+pkgtype(kind: "executable")
