@@ -21,6 +21,8 @@ pub fn GqlSyntaxError::to_string(self : GqlSyntaxError) -> String {
 }
 
 ///|
+/// Prints the line and column the parse gave up at, which is the whole point of
+/// hand-writing the parser.
 pub impl Show for GqlSyntaxError with fn output(self, logger) {
   logger.write_string(self.to_string())
 }
