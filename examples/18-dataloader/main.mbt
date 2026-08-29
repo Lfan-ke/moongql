@@ -16,7 +16,7 @@ fn or_missing(v : String?) -> String {
 ///     moon run examples/18-dataloader
 #coverage.skip
 fn main {
-  let calls : Ref[Int] = { val: 0 }
+  let calls : Ref[Int] = { val: 0, }
   let seen : Array[String] = []
   let loader : @moongql.DataLoader[Int, String] = @moongql.DataLoader::new(
     keys => {

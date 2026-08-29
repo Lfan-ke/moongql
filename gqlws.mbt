@@ -43,7 +43,7 @@ pub fn graphql_ws_handler(
   root_value? : Json = Json::null(),
   context? : Json = Json::null(),
 ) -> @moonasgi.WebSocketHandler {
-  let state : GqlWsState = { initialized: false, used: Map([]) }
+  let state : GqlWsState = { initialized: false, used: Map([]), }
   @moonasgi.WebSocketHandler::new(
     on_connect=fn(scope) {
       if scope.subprotocols.contains("graphql-transport-ws") {
@@ -271,7 +271,7 @@ fn operation_type_of(
   let doc = parse(query) catch {
     GqlSyntaxError(m, line, col) =>
       return Err([
-        { message: m, path: [], locations: [(line, col)], extensions: Map([]) },
+        { message: m, path: [], locations: [(line, col)], extensions: Map([]), },
       ])
   }
   let verrors = validate(schema, doc)

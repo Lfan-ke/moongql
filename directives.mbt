@@ -30,7 +30,7 @@ pub fn AppliedDirective::new(
   name : String,
   args? : Array[(String, Json)] = [],
 ) -> AppliedDirective {
-  { name, args }
+  { name, args, }
 }
 
 ///|
@@ -71,7 +71,7 @@ pub fn Schema::directive(
   is_repeatable? : Bool = false,
   on_field? : FieldDirectiveHook? = None,
 ) -> Unit {
-  self.directive_defs.push({ name, locations, args, is_repeatable, on_field })
+  self.directive_defs.push({ name, locations, args, is_repeatable, on_field, })
 }
 
 ///|

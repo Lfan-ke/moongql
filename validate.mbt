@@ -857,7 +857,7 @@ fn Validator::check_fragment(
 /// Validate a whole document against `schema`, returning all errors found (an
 /// empty array means the document is valid and ready to execute).
 pub fn validate(schema : Schema, doc : Document) -> Array[GqlError] {
-  let v = { schema, fragments: collect_fragments(doc), errors: [] }
+  let v = { schema, fragments: collect_fragments(doc), errors: [], }
   v.check_operation_names(doc)
   v.check_fragment_uniqueness(doc)
   v.check_fragment_cycles(doc)

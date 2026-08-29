@@ -16,7 +16,7 @@ fn rules_schema() -> Schema {
 /// can assert a message is present, or that the string is empty for a valid query).
 fn verr_text(s : Schema, query : String) -> String {
   let doc = parse(query) catch { GqlSyntaxError(m, _, _) => return m }
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   for e in validate(s, doc) {
     sb.write_string(e.message)
     sb.write_char('\n')

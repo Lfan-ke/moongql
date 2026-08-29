@@ -26,7 +26,7 @@ pub struct Subscribers {
 ///|
 /// Create an empty subscription source registry.
 pub fn Subscribers::new() -> Subscribers {
-  { map: Map([]) }
+  { map: Map([]), }
 }
 
 ///|
@@ -129,7 +129,7 @@ pub fn create_source_event_stream(
   let doc = parse(query) catch {
     GqlSyntaxError(m, line, col) =>
       return RequestError([
-        { message: m, path: [], locations: [(line, col)], extensions: Map([]) },
+        { message: m, path: [], locations: [(line, col)], extensions: Map([]), },
       ])
   }
   let verrors = validate(schema, doc)
@@ -213,7 +213,7 @@ pub fn create_source_event_stream(
     ResolverError(m) => return RequestError([GqlError::msg(m)])
     ResolverErrorExt(m, ext) =>
       return RequestError([
-        { message: m, path: [], locations: [], extensions: ext },
+        { message: m, path: [], locations: [], extensions: ext, },
       ])
   }
   let out : Array[Json] = []

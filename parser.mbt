@@ -19,7 +19,7 @@ priv struct Parser {
 fn Parser::new(source : String) -> Parser raise GqlSyntaxError {
   let lexer = Lexer::new(source)
   let current = lexer.next_token()
-  { lexer, current }
+  { lexer, current, }
 }
 
 ///|
@@ -187,7 +187,7 @@ fn Parser::parse_operation(
   let variable_definitions = self.parse_variable_definitions()
   let directives = self.parse_directives()
   let selection_set = self.parse_selection_set()
-  { operation, name, variable_definitions, directives, selection_set }
+  { operation, name, variable_definitions, directives, selection_set, }
 }
 
 ///|
@@ -212,7 +212,7 @@ fn Parser::parse_variable_definitions(
       None
     }
     let directives = self.parse_directives()
-    defs.push({ variable, typ, default_value, directives })
+    defs.push({ variable, typ, default_value, directives, })
   }
   self.expect(ParenR) |> ignore
   defs
@@ -246,7 +246,7 @@ fn Parser::parse_directives(
     self.advance() |> ignore
     let name = self.expect_name()
     let arguments = self.parse_arguments(false)
-    ds.push({ name, arguments })
+    ds.push({ name, arguments, })
   }
   ds
 }
@@ -268,7 +268,7 @@ fn Parser::parse_arguments(
     let name = self.expect_name()
     self.expect(Colon) |> ignore
     let value = self.parse_value(const_)
-    args.push({ name, value })
+    args.push({ name, value, })
   }
   self.expect(ParenR) |> ignore
   args
@@ -335,7 +335,7 @@ fn Parser::parse_field(self : Parser) -> QueryField raise GqlSyntaxError {
   } else {
     []
   }
-  { alias_: field_alias, name, arguments, directives, selection_set }
+  { alias_: field_alias, name, arguments, directives, selection_set, }
 }
 
 ///|
@@ -353,7 +353,7 @@ fn Parser::parse_fragment(
   let type_condition = self.expect_name()
   let directives = self.parse_directives()
   let selection_set = self.parse_selection_set()
-  { name, type_condition, directives, selection_set }
+  { name, type_condition, directives, selection_set, }
 }
 
 ///|

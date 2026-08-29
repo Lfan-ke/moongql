@@ -30,7 +30,7 @@ pub fn[K, V] DataLoader::new(
   batch_load : (Array[K]) -> Array[V],
   key : (K) -> String,
 ) -> DataLoader[K, V] {
-  { batch_load, key, cache: Map([]), queue: [], queued: Map([]) }
+  { batch_load, key, cache: Map([]), queue: [], queued: Map([]), }
 }
 
 ///|

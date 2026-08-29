@@ -12,7 +12,7 @@ fn or_missing(v : String?) -> String {
 /// one batch call over the distinct keys. The counter and the recorded key list
 /// prove both the single call and the dedupe.
 test "dataloader collapses N+1 into one deduped batch" {
-  let calls : Ref[Int] = { val: 0 }
+  let calls : Ref[Int] = { val: 0, }
   let seen : Array[String] = []
   let loader : DataLoader[Int, String] = DataLoader::new(
     keys => {
@@ -45,7 +45,7 @@ test "dataloader collapses N+1 into one deduped batch" {
 /// Before dispatch a key is not yet loaded; a second pass over a cached key runs
 /// no new batch, and `prime` seeds a value with no backend call at all.
 test "dataloader caches, primes and clears" {
-  let calls : Ref[Int] = { val: 0 }
+  let calls : Ref[Int] = { val: 0, }
   let loader : DataLoader[Int, String] = DataLoader::new(
     keys => {
       calls.val = calls.val + 1
@@ -85,7 +85,7 @@ test "dataloader caches, primes and clears" {
 ///|
 /// `load_now` and `load_many` cover the single-key and bulk entry points.
 test "dataloader load_now and load_many" {
-  let calls : Ref[Int] = { val: 0 }
+  let calls : Ref[Int] = { val: 0, }
   let loader : DataLoader[Int, String] = DataLoader::new(
     keys => {
       calls.val = calls.val + 1

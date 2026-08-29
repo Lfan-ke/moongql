@@ -53,7 +53,7 @@ pub struct Resolvers {
 ///|
 /// Create an empty resolver registry.
 pub fn Resolvers::new() -> Resolvers {
-  { map: Map([]) }
+  { map: Map([]), }
 }
 
 ///|
@@ -80,7 +80,7 @@ pub(all) struct GqlError {
 ///|
 /// Build an error carrying only a message (used for request-level errors).
 fn GqlError::msg(message : String) -> GqlError {
-  { message, path: [], locations: [], extensions: Map([]) }
+  { message, path: [], locations: [], extensions: Map([]), }
 }
 
 ///|
@@ -157,7 +157,7 @@ priv struct Exec {
 ///|
 /// Record a field error at `path`.
 fn Exec::add_error(self : Exec, message : String, path : Array[Json]) -> Unit {
-  self.errors.push({ message, path, locations: [], extensions: Map([]) })
+  self.errors.push({ message, path, locations: [], extensions: Map([]), })
 }
 
 ///|
@@ -169,7 +169,7 @@ fn Exec::add_error_ext(
   path : Array[Json],
   extensions : Map[String, Json],
 ) -> Unit {
-  self.errors.push({ message, path, locations: [], extensions })
+  self.errors.push({ message, path, locations: [], extensions, })
 }
 
 ///|
@@ -458,7 +458,7 @@ fn Exec::resolve_raw(
   }
   match self.resolvers.map.get(obj.name + "." + name) {
     Some(resolver) => {
-      let info = { parent, args, ctx: self.ctx, field_name: name }
+      let info = { parent, args, ctx: self.ctx, field_name: name, }
       resolver(info) catch {
         ResolverError(m) => {
           self.add_error(m, path)
@@ -848,7 +848,7 @@ fn select_operation(
           )
       }
   }
-  Ok({ operation: chosen, root_type })
+  Ok({ operation: chosen, root_type, })
 }
 
 ///|
@@ -925,7 +925,7 @@ fn Exec::state(
   variables : Map[String, Json],
   ctx : Json,
 ) -> Exec {
-  { schema, resolvers, fragments, variables, ctx, errors: [] }
+  { schema, resolvers, fragments, variables, ctx, errors: [], }
 }
 
 ///|
@@ -964,7 +964,7 @@ pub fn execute(
   let doc = parse(query) catch {
     GqlSyntaxError(m, line, col) =>
       return build_response(None, [
-        { message: m, path: [], locations: [(line, col)], extensions: Map([]) },
+        { message: m, path: [], locations: [(line, col)], extensions: Map([]), },
       ])
   }
   let verrors = validate(schema, doc)

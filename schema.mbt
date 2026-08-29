@@ -237,7 +237,7 @@ pub fn Schema::union(
   name : String,
   members : Array[String],
 ) -> Unit {
-  self.unions.push({ name, members })
+  self.unions.push({ name, members, })
 }
 
 ///|
@@ -262,7 +262,7 @@ pub fn Schema::scalar(
   parse_value? : (Json) -> Json = fn(x) { x },
   spec_url? : String,
 ) -> Unit {
-  self.scalars.push({ name, serialize, parse_value, spec_url })
+  self.scalars.push({ name, serialize, parse_value, spec_url, })
 }
 
 ///|

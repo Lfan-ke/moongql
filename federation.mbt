@@ -53,7 +53,7 @@ pub struct Federation {
 /// which may use the v2-only directives (`@shareable`, `@inaccessible`,
 /// `@override`).
 pub fn Federation::new(v2? : Bool = false) -> Federation {
-  { entities: [], v2, field_dirs: [] }
+  { entities: [], v2, field_dirs: [], }
 }
 
 ///|
@@ -171,7 +171,7 @@ pub fn Federation::entity(
   extends? : Bool = false,
   external? : Array[String] = [],
 ) -> Unit {
-  self.entities.push({ name, key, extends, external, resolve })
+  self.entities.push({ name, key, extends, external, resolve, })
 }
 
 ///|

@@ -121,7 +121,7 @@ pub(all) enum Value {
 ///|
 /// A string of `2 * n` spaces, used as one indentation level by the printer.
 fn indent_pad(n : Int) -> String {
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   for _ in 0..<(n * 2) {
     sb.write_char(' ')
   }
@@ -131,7 +131,7 @@ fn indent_pad(n : Int) -> String {
 ///|
 /// Escape a string's contents for printing inside GraphQL double quotes.
 fn escape_string(s : String) -> String {
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   for c in s {
     match c {
       '"' => sb.write_string("\\\"")
@@ -162,7 +162,7 @@ pub fn Value::to_query(self : Value) -> String {
     NullValue => "null"
     EnumValue(n) => n
     ListValue(items) => {
-      let sb = StringBuilder::new()
+      let sb = StringBuilder()
       sb.write_char('[')
       for i, v in items {
         if i > 0 {
@@ -174,7 +174,7 @@ pub fn Value::to_query(self : Value) -> String {
       sb.to_string()
     }
     ObjectValue(fields) => {
-      let sb = StringBuilder::new()
+      let sb = StringBuilder()
       sb.write_char('{')
       for i, kv in fields {
         if i > 0 {
@@ -204,7 +204,7 @@ pub fn TypeRef::to_query(self : TypeRef) -> String {
 ///|
 /// Print a directive: `@name(a: 1, b: 2)`.
 fn directive_sdl(d : Directive) -> String {
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   sb.write_char('@')
   sb.write_string(d.name)
   sb.write_string(arguments_sdl(d.arguments))
@@ -214,7 +214,7 @@ fn directive_sdl(d : Directive) -> String {
 ///|
 /// Print a directive list, each prefixed by a space, or the empty string.
 fn directives_sdl(ds : Array[Directive]) -> String {
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   for d in ds {
     sb.write_char(' ')
     sb.write_string(directive_sdl(d))
@@ -228,7 +228,7 @@ fn arguments_sdl(args : Array[Argument]) -> String {
   if args.length() == 0 {
     return ""
   }
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   sb.write_char('(')
   for i, a in args {
     if i > 0 {
@@ -245,7 +245,7 @@ fn arguments_sdl(args : Array[Argument]) -> String {
 ///|
 /// Print a selection set as an indented `{ ... }` block at the given depth.
 fn selection_set_sdl(sels : Array[Selection], depth : Int) -> String {
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   sb.write_string("{\n")
   let pad = indent_pad(depth + 1)
   for s in sels {
@@ -263,7 +263,7 @@ fn selection_set_sdl(sels : Array[Selection], depth : Int) -> String {
 fn selection_sdl(sel : Selection, depth : Int) -> String {
   match sel {
     FieldSel(f) => {
-      let sb = StringBuilder::new()
+      let sb = StringBuilder()
       match f.alias_ {
         Some(a) => {
           sb.write_string(a)
@@ -282,7 +282,7 @@ fn selection_sdl(sel : Selection, depth : Int) -> String {
     }
     FragmentSpreadSel(name, ds) => "..." + name + directives_sdl(ds)
     InlineFragmentSel(cond, ds, sels) => {
-      let sb = StringBuilder::new()
+      let sb = StringBuilder()
       sb.write_string("...")
       match cond {
         Some(c) => {
@@ -320,7 +320,7 @@ fn operation_sdl(op : OperationDefinition) -> String {
   if shorthand {
     return selection_set_sdl(op.selection_set, 0)
   }
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   sb.write_string(operation_keyword(op.operation))
   match op.name {
     Some(n) => {
@@ -359,7 +359,7 @@ fn operation_sdl(op : OperationDefinition) -> String {
 ///|
 /// Print a fragment definition: `fragment Name on Type @dir { ... }`.
 fn fragment_sdl(fr : FragmentDefinition) -> String {
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   sb.write_string("fragment ")
   sb.write_string(fr.name)
   sb.write_string(" on ")
@@ -374,7 +374,7 @@ fn fragment_sdl(fr : FragmentDefinition) -> String {
 /// Print a whole document back to a canonical GraphQL string: each definition,
 /// separated by a blank line. Parsing this output yields an equivalent AST.
 pub fn Document::to_query(self : Document) -> String {
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   for i, def in self.definitions {
     if i > 0 {
       sb.write_string("\n\n")

@@ -20,7 +20,7 @@ fn intro_obj(name : String, fields : Array[(String, GqlType)]) -> ObjectType {
       description: None,
     })
   }
-  { name, fields: fs, kind: Object, interfaces: [], description: None }
+  { name, fields: fs, kind: Object, interfaces: [], description: None, }
 }
 
 ///|

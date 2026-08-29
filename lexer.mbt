@@ -110,7 +110,7 @@ fn Lexer::new(src : String) -> Lexer {
   for c in src {
     chars.push(c)
   }
-  { chars, pos: 0, line: 1, col: 1 }
+  { chars, pos: 0, line: 1, col: 1, }
 }
 
 ///|
@@ -182,7 +182,7 @@ fn Lexer::skip_ignored(self : Lexer) -> Unit {
 ///|
 /// Read a `Name` token starting at the cursor (cursor is on a name-start char).
 fn Lexer::read_name(self : Lexer, line : Int, col : Int) -> Token {
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   for ;; {
     match self.peek() {
       Some(c) =>
@@ -194,7 +194,7 @@ fn Lexer::read_name(self : Lexer, line : Int, col : Int) -> Token {
       None => break
     }
   }
-  { kind: Name, value: sb.to_string(), line, col }
+  { kind: Name, value: sb.to_string(), line, col, }
 }
 
 ///|
@@ -206,7 +206,7 @@ fn Lexer::read_number(
   line : Int,
   col : Int,
 ) -> Token raise GqlSyntaxError {
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   let mut is_float = false
   if self.peek() is Some('-') {
     sb.write_char(self.advance())
@@ -303,7 +303,7 @@ fn Lexer::read_string(
   col : Int,
 ) -> Token raise GqlSyntaxError {
   self.advance() |> ignore // opening quote
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   for ;; {
     match self.peek() {
       None | Some('\n') | Some('\r') =>
@@ -319,7 +319,7 @@ fn Lexer::read_string(
       Some(_) => sb.write_char(self.advance())
     }
   }
-  { kind: StringVal, value: sb.to_string(), line, col }
+  { kind: StringVal, value: sb.to_string(), line, col, }
 }
 
 ///|
@@ -452,7 +452,7 @@ fn Lexer::read_block_string(
   self.advance() |> ignore
   self.advance() |> ignore
   self.advance() |> ignore
-  let raw = StringBuilder::new()
+  let raw = StringBuilder()
   for ;; {
     match self.peek() {
       None => raise GqlSyntaxError("unterminated block string", line, col)
@@ -492,7 +492,7 @@ fn Lexer::read_block_string(
 /// Split a string on line terminators (`\n`, `\r`, `\r\n`) into lines.
 fn split_lines(s : String) -> Array[String] {
   let lines = []
-  let cur = StringBuilder::new()
+  let cur = StringBuilder()
   let chars = []
   for c in s {
     chars.push(c)
@@ -590,7 +590,7 @@ fn dedent_block_string(raw : String) -> String {
   while end > start && is_blank(stripped[end - 1]) {
     end = end - 1
   }
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   for i = start; i < end; i = i + 1 {
     if i > start {
       sb.write_char('\n')
@@ -608,7 +608,7 @@ fn Lexer::next_token(self : Lexer) -> Token raise GqlSyntaxError {
   let line = self.line
   let col = self.col
   match self.peek() {
-    None => { kind: Eof, value: "", line, col }
+    None => { kind: Eof, value: "", line, col, }
     Some(c) =>
       if is_name_start(c) {
         self.read_name(line, col)
@@ -652,7 +652,7 @@ fn Lexer::read_punctuator(
       if self.peek() is Some('.') && self.peek_at(1) is Some('.') {
         self.advance() |> ignore
         self.advance() |> ignore
-        return { kind: Spread, value: "...", line, col }
+        return { kind: Spread, value: "...", line, col, }
       }
       raise GqlSyntaxError("unexpected character '.'", line, col)
     }
@@ -663,7 +663,7 @@ fn Lexer::read_punctuator(
         col,
       )
   }
-  { kind, value: "", line, col }
+  { kind, value: "", line, col, }
 }
 
 ///|
