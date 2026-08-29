@@ -206,3 +206,57 @@ test "variables are input types" {
     true,
   )
 }
+
+///|
+/// §5.6.3: an input object literal may not repeat a field name.
+test "input object field uniqueness" {
+  let s = rules_schema()
+  let f = s.input("Filter")
+  f.field("name", Scalar("String"))
+  let q = s.type_by_name("Query").unwrap()
+  q.field_args("search", [("filter", Named("Filter"))], Named("User"))
+  assert_eq(
+    verr_text(s, "{ search(filter: { name: \"a\", name: \"b\" }) { id } }").contains(
+      "only one input field named 'Filter.name'",
+    ),
+    true,
+  )
+  assert_eq(verr_text(s, "{ search(filter: { name: \"a\" }) { id } }"), "")
+}
+
+///|
+/// §5.5.1.3: a fragment's type condition must be composite — an input object is a
+/// type, but nothing selects fields from it.
+test "a fragment cannot condition on an input object" {
+  let s = rules_schema()
+  let f = s.input("Filter")
+  f.field("name", Scalar("String"))
+  assert_eq(
+    verr_text(s, "{ user(id: \"1\") { ...F } } fragment F on Filter { name }").length() >
+    0,
+    true,
+  )
+  // The same fragment on an object type is fine.
+  assert_eq(
+    verr_text(s, "{ user(id: \"1\") { ...F } } fragment F on User { name }"),
+    "",
+  )
+}
+
+///|
+/// §5.8.3: a variable used inside a spread fragment must be defined by the
+/// operation that spreads it. Checking only the operation's own selections missed
+/// the common case, and the undefined variable then executed as null.
+test "a variable used inside a fragment must be defined by the operation" {
+  let s = rules_schema()
+  let bad = verr_text(
+    s,
+    "query Q($a: ID!) { user(id: $a) { ...F } } fragment F on User { name }" +
+    " query R($b: ID!) { user(id: $b) { ...G } } fragment G on User { name }",
+  )
+  assert_eq(bad, "")
+  let unbound = verr_text(
+    s, "query Q($a: ID!) { ...F } fragment F on Query { user(id: $missing) { id } }",
+  )
+  assert_eq(unbound.contains("'$missing' is not defined"), true)
+}

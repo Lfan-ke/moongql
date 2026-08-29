@@ -392,7 +392,18 @@ fn kind_keyword(k : TypeKind) -> String {
 /// block per composite type (`type` / `input` / `interface`, with `implements`
 /// and field arguments), then one block per enum type.
 pub fn Schema::to_sdl(self : Schema) -> String {
-  let mut out = "schema {\n  query: " + self.query + "\n}\n\n"
+  let roots = StringBuilder()
+  roots.write_string("schema {\n  query: " + self.query + "\n")
+  // A schema that sets a mutation or subscription root has to say so, or its SDL
+  // describes a different schema from the one that runs.
+  if self.mutation is Some(m) {
+    roots.write_string("  mutation: " + m + "\n")
+  }
+  if self.subscription is Some(sub) {
+    roots.write_string("  subscription: " + sub + "\n")
+  }
+  roots.write_string("}\n\n")
+  let mut out = roots.to_string()
   for obj in self.types {
     out = out + kind_keyword(obj.kind) + " " + obj.name
     if obj.interfaces.length() > 0 {

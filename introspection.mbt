@@ -178,13 +178,34 @@ fn Exec::type_ref_json(self : Exec, t : GqlType) -> Json {
 }
 
 ///|
-/// Materialise a `__InputValue` for an argument or input field.
-fn Exec::input_value_json(self : Exec, name : String, typ : GqlType) -> Json {
+/// Materialise a `__InputValue` for an argument or input field. `default` is the
+/// GraphQL literal the spec asks for — a string, not the JSON value — because that
+/// is what codegen and GraphiQL render back into a query.
+fn Exec::input_value_json(
+  self : Exec,
+  name : String,
+  typ : GqlType,
+  default? : Json? = None,
+  description? : String = "",
+) -> Json {
   jobj([
     ("name", name.to_json()),
-    ("description", Json::null()),
+    (
+      "description",
+      if description == "" {
+        Json::null()
+      } else {
+        description.to_json()
+      },
+    ),
     ("type", self.type_ref_json(typ)),
-    ("defaultValue", Json::null()),
+    (
+      "defaultValue",
+      match default {
+        Some(d) => json_to_gql_literal(d).to_json()
+        None => Json::null()
+      },
+    ),
   ])
 }
 
@@ -193,7 +214,7 @@ fn Exec::input_value_json(self : Exec, name : String, typ : GqlType) -> Json {
 fn Exec::field_json(self : Exec, f : Field) -> Json {
   let args : Array[Json] = []
   for a in f.args {
-    args.push(self.input_value_json(a.0, a.1))
+    args.push(self.input_value_json(a.0, a.1, default=f.arg_defaults.get(a.0)))
   }
   jobj([
     ("name", f.name.to_json()),
@@ -400,6 +421,12 @@ fn Exec::introspection_type_by_name(self : Exec, name : String) -> Json {
     Some(def) => return self.union_type_json(def)
     None => ()
   }
+  // The introspection types are types the server supports, so `__type(name:
+  // "__Schema")` has to answer with one.
+  match introspection_type_def(name) {
+    Some(def) => return self.composite_type_json(def)
+    None => ()
+  }
   if is_builtin_scalar(name) {
     return scalar_type_json(name)
   }
@@ -422,7 +449,11 @@ fn Exec::directives_json(self : Exec) -> Json {
     self.input_value_json("if", NonNull(Scalar("Boolean"))),
   ]
   let deprecated_reason : Array[Json] = [
-    self.input_value_json("reason", Scalar("String")),
+    self.input_value_json(
+      "reason",
+      Scalar("String"),
+      default=Some("No longer supported".to_json()),
+    ),
   ]
   let directive = fn(
     name : String,
@@ -442,9 +473,17 @@ fn Exec::directives_json(self : Exec) -> Json {
     directive("skip", field_locs, bool_if),
     directive(
       "deprecated",
-      ["FIELD_DEFINITION".to_json(), "ENUM_VALUE".to_json()],
+      [
+        "FIELD_DEFINITION".to_json(),
+        "ARGUMENT_DEFINITION".to_json(),
+        "INPUT_FIELD_DEFINITION".to_json(),
+        "ENUM_VALUE".to_json(),
+      ],
       deprecated_reason,
     ),
+    directive("specifiedBy", ["SCALAR".to_json()], [
+      self.input_value_json("url", NonNull(Scalar("String"))),
+    ]),
   ]
   // User-registered directives (@upper, @auth, ...) show up alongside the built-ins.
   for d in self.schema.directive_defs {
@@ -496,6 +535,17 @@ fn Exec::introspection_schema(self : Exec) -> Json {
   }
   for s in ["String", "Int", "Float", "Boolean", "ID"] {
     types.push(scalar_type_json(s))
+  }
+  // `types` is every type the server supports, which includes the introspection
+  // system itself — a client generating code off the schema needs them.
+  for
+    name in [
+      "__Schema", "__Type", "__Field", "__InputValue", "__EnumValue", "__Directive",
+    ] {
+    match introspection_type_def(name) {
+      Some(def) => types.push(self.composite_type_json(def))
+      None => ()
+    }
   }
   for sc in self.schema.scalars {
     types.push(scalar_type_json(sc.name, spec_url?=sc.spec_url))

@@ -146,7 +146,16 @@ pub fn create_source_event_stream(
     ])
   }
   let fragments = collect_fragments(doc)
-  let vars = coerce_variables(prepared.operation, variables, fragments)
+  let var_errors : Array[GqlError] = []
+  let vars = coerce_variables(
+    prepared.operation,
+    variables,
+    fragments,
+    errors=var_errors,
+  )
+  if var_errors.length() > 0 {
+    return RequestError(var_errors)
+  }
   let root_type = match schema.type_by_name(prepared.root_type) {
     Some(t) => t
     None =>

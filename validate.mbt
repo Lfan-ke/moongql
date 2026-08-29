@@ -378,8 +378,19 @@ fn Validator::check_input_value(
 ) -> Unit {
   match v {
     ObjectValue(fields) => {
+      let seen : Array[String] = []
       for kv in fields {
         let (fname, fval) = kv
+        if seen.contains(fname) {
+          self.err(
+            "There can be only one input field named '" +
+            td.name +
+            "." +
+            fname +
+            "'.",
+          )
+        }
+        seen.push(fname)
         match td.field_by_name(fname) {
           Some(fdef) =>
             self.check_value_type(
@@ -686,8 +697,12 @@ fn Validator::types_overlap(
 /// Whether a name denotes a selectable type: a composite/introspection type or a
 /// union. Used to accept union type conditions on fragments.
 fn Validator::type_exists(self : Validator, name : String) -> Bool {
-  self.lookup_type(name) is Some(_) ||
-  self.schema.union_by_name(name) is Some(_)
+  // An input object is a type, but not a *composite* one: nothing selects fields
+  // from it, so a fragment cannot condition on it (§5.5.1.3).
+  match self.lookup_type(name) {
+    Some(t) => !(t.kind is Input)
+    None => self.schema.union_by_name(name) is Some(_)
+  }
 }
 
 ///|
@@ -770,6 +785,23 @@ fn Validator::check_operation(
   for vd in op.variable_definitions {
     if not(str_in(used, vd.variable)) {
       self.err("Variable '$" + vd.variable + "' is never used")
+    }
+  }
+  // §5.8.3 All Variable Uses Defined, over the same transitive set. Checking only
+  // the operation's own selections misses the common case — a variable referenced
+  // inside a fragment the operation spreads — which then executed as null.
+  for name in used {
+    if not(str_in(defined, name)) {
+      self.err(
+        "Variable '$" +
+        name +
+        "' is not defined by operation '" +
+        (match op.name {
+          Some(n) => n
+          None => "(anonymous)"
+        }) +
+        "'",
+      )
     }
   }
 }

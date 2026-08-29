@@ -112,3 +112,19 @@ test "object implementing multiple interfaces joins with &" {
     true,
   )
 }
+
+///|
+/// A schema that has a mutation or subscription root must say so in its SDL —
+/// printing only the query root describes a different schema from the one running.
+test "to_sdl prints every root operation type" {
+  let s = Schema::new(query="RootQuery")
+  s.set_mutation("RootMutation")
+  s.set_subscription("RootSubscription")
+  let sdl = s.to_sdl()
+  assert_eq(sdl.contains("query: RootQuery"), true)
+  assert_eq(sdl.contains("mutation: RootMutation"), true)
+  assert_eq(sdl.contains("subscription: RootSubscription"), true)
+  // A query-only schema still prints just the one root.
+  let plain = Schema::new()
+  assert_eq(plain.to_sdl().contains("mutation:"), false)
+}

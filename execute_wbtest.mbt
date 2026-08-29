@@ -250,3 +250,31 @@ test "inline fragment with type condition" {
     ),
   )
 }
+
+///|
+/// §6.1.2: a non-null variable with no value is a request error — the operation
+/// never runs. It used to reach the resolver as null, which made a broken request
+/// look like a successful one that found nothing.
+test "a missing required variable is a request error" {
+  let s = Schema::new()
+  let q = s.object("Query")
+  q.field_args("user", [("id", NonNull(Scalar("ID")))], Named("User"))
+  let u = s.object("User")
+  u.field("id", NonNull(Scalar("ID")))
+  let r = Resolvers::new()
+  let reached : Array[Json] = []
+  r.field("Query", "user", info => {
+    reached.push(info.arg("id"))
+    { "id": "u1" }.to_json()
+  })
+  let query = "query ($id: ID!) { user(id: $id) { id } }"
+  let resp = execute(s, r, query, variables=Map([]))
+  assert_eq(reached.length(), 0)
+  let text = resp.stringify()
+  assert_eq(text.contains("was not provided"), true)
+  assert_eq(text.contains("\"data\""), false)
+  // Supplied, it runs.
+  let ok = execute(s, r, query, variables=Map([("id", "u1".to_json())]))
+  assert_eq(reached.length(), 1)
+  assert_eq(ok.stringify().contains("\"errors\""), false)
+}

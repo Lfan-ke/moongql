@@ -347,10 +347,12 @@ pub fn Federation::apply(
     None => ()
   }
   let fed = self
-  resolvers.field("Query", "_service", fn(_info) {
+  // The fields go on the schema's query root, whatever it is named, so the
+  // resolvers have to be registered against the same type.
+  resolvers.field(schema.query, "_service", fn(_info) {
     jobj([("sdl", fed.sdl(schema).to_json())])
   })
-  resolvers.field("Query", "_entities", info => {
+  resolvers.field(schema.query, "_entities", info => {
     let reps = match info.arg("representations") {
       Array(items) => items
       _ => []

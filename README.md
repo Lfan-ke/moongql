@@ -65,7 +65,7 @@ It covers operations (`query`/`mutation`/`subscription` and the `{ ... }` shorth
 
 ## Executing a query
 
-`moongql` now **runs** queries. `execute` parses, validates against the schema, then walks the document with a **resolver map** — `(ResolveInfo) -> Json` functions keyed by `"Type.field"` — returning the `{ data, errors }` response as JSON. It supports variables (with defaults), aliases, named and inline fragments, `@skip`/`@include`, nested selection, list and object results, non-null error propagation, and full introspection (`__schema` / `__type` / `__typename`).
+`moongql` now **runs** queries. `execute` parses, validates against the schema, then walks the document with a **resolver map** — `(ResolveInfo) -> Json` functions keyed by `"Type.field"` — returning the `{ data, errors }` response as JSON. It supports variables (with defaults), aliases, named and inline fragments, `@skip`/`@include`, nested selection, list and object results, non-null error propagation, and introspection (`__schema` / `__type` / `__typename`), including the introspection types themselves and argument defaults.
 
 ```moonbit
 let s = @moongql.Schema::new()
@@ -257,7 +257,7 @@ Registered directives show up in `__schema { directives }` beside the built-ins,
 
 ## Spec validation
 
-The validator implements a broad slice of the GraphQL spec's §5 validation table. Beyond the per-selection rules (fields and arguments exist, leaf-vs-composite selections, fragment type conditions, defined variables), it enforces the document-level rules:
+The validator implements a broad slice of the GraphQL spec's §5 validation table. Beyond the per-selection rules (fields and arguments exist, leaf-vs-composite selections, fragment type conditions, and variables defined by the operation — checked through the fragments it spreads, not only its own selections), it enforces the document-level rules:
 
 | Rule | Spec |
 |---|---|

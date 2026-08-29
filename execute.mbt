@@ -867,10 +867,17 @@ fn collect_fragments(doc : Document) -> Map[String, FragmentDefinition] {
 ///|
 /// Coerce an operation's variable values: use the request-supplied value when
 /// present, else the variable's default, else null.
+///
+/// `errors` collects the request errors §6.1.2 requires — a non-null variable with
+/// no value, or `null` given for one. A caller that finds it non-empty must answer
+/// with errors and no `data`, because execution never started. Without this a
+/// missing `$id: ID!` reached the resolver as null and the request looked like it
+/// had run.
 fn coerce_variables(
   op : OperationDefinition,
   supplied : Map[String, Json],
   fragments : Map[String, FragmentDefinition],
+  errors? : Array[GqlError] = [],
 ) -> Map[String, Json] {
   let coerced : Map[String, Json] = Map([])
   // A throwaway executor is used only for default-value literal coercion, which
@@ -884,12 +891,33 @@ fn coerce_variables(
     errors: [],
   }
   for vd in op.variable_definitions {
+    let required = vd.typ is NonNullType(_)
     match supplied.get(vd.variable) {
-      Some(v) => coerced[vd.variable] = v
+      Some(v) => {
+        if required && v is Null {
+          errors.push(
+            GqlError::msg(
+              "Variable '$" +
+              vd.variable +
+              "' of non-null type must not be null.",
+            ),
+          )
+        }
+        coerced[vd.variable] = v
+      }
       None =>
         match vd.default_value {
           Some(dv) => coerced[vd.variable] = tmp.value_to_json(dv)
-          None => ()
+          None =>
+            if required {
+              errors.push(
+                GqlError::msg(
+                  "Variable '$" +
+                  vd.variable +
+                  "' of required type was not provided.",
+                ),
+              )
+            }
         }
     }
   }
@@ -976,7 +1004,16 @@ pub fn execute(
     Err(e) => return build_response(None, [e])
   }
   let fragments = collect_fragments(doc)
-  let vars = coerce_variables(prepared.operation, variables, fragments)
+  let var_errors : Array[GqlError] = []
+  let vars = coerce_variables(
+    prepared.operation,
+    variables,
+    fragments,
+    errors=var_errors,
+  )
+  if var_errors.length() > 0 {
+    return build_response(None, var_errors)
+  }
   let exec = Exec::state(schema, resolvers, fragments, vars, context)
   let root_type = match schema.type_by_name(prepared.root_type) {
     Some(t) => t
