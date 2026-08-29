@@ -69,8 +69,11 @@ SECTIONS = [
      "the _Entity union and the _entities(representations) resolver. v2 opts in "
      "with @link and adds @shareable / @inaccessible / @override / @requires / "
      "@provides on fields, rendered into the subgraph SDL."),
+    ("gqlws", "gqlws.mbt", "graphql-transport-ws",
+     "The WebSocket subprotocol a subscription client speaks: connection_init and "
+     "its ack, ping/pong, subscribe with single-use operation ids, and the next / "
+     "error / complete messages a running operation produces."),
 ]
-
 KIND = {"struct": "struct", "enum": "enum", "fn": "fn", "type": "type", "let": "let"}
 
 
