@@ -35,6 +35,7 @@ pub impl Show for GqlSyntaxError
 
 pub(all) suberror ResolverError {
   ResolverError(String)
+  ResolverErrorExt(String, Map[String, Json])
 }
 
 // Types and methods
@@ -101,6 +102,8 @@ pub(all) struct EnumType {
   name : String
   values : Array[String]
   deprecations : Map[String, String]
+  description : String?
+  value_descriptions : Map[String, String]
 }
 
 pub struct Federation {
@@ -124,6 +127,7 @@ pub(all) struct Field {
   typ : GqlType
   arg_defaults : Map[String, Json]
   deprecation_reason : String?
+  description : String?
 }
 
 pub(all) struct FragmentDefinition {
@@ -137,6 +141,7 @@ pub(all) struct GqlError {
   message : String
   path : Array[Json]
   locations : Array[(Int, Int)]
+  extensions : Map[String, Json]
 }
 
 pub(all) enum GqlType {
@@ -152,9 +157,10 @@ pub(all) struct ObjectType {
   fields : Array[Field]
   kind : TypeKind
   interfaces : Array[String]
+  description : String?
 }
-pub fn ObjectType::field(Self, String, GqlType, deprecation_reason? : String) -> Unit
-pub fn ObjectType::field_args(Self, String, Array[(String, GqlType)], GqlType, defaults? : Array[(String, Json)], deprecation_reason? : String) -> Unit
+pub fn ObjectType::field(Self, String, GqlType, deprecation_reason? : String, description? : String) -> Unit
+pub fn ObjectType::field_args(Self, String, Array[(String, GqlType)], GqlType, defaults? : Array[(String, Json)], deprecation_reason? : String, description? : String) -> Unit
 pub fn ObjectType::field_by_name(Self, String) -> Field?
 pub fn ObjectType::implements(Self, String) -> Unit
 
@@ -198,6 +204,7 @@ pub(all) struct ScalarType {
   name : String
   serialize : (Json) -> Json
   parse_value : (Json) -> Json
+  spec_url : String?
 }
 
 pub struct Schema {
@@ -218,15 +225,15 @@ pub fn Schema::apply_schema_directive(Self, AppliedDirective) -> Unit
 pub fn Schema::apply_type_directive(Self, String, AppliedDirective) -> Unit
 pub fn Schema::directive(Self, String, locations~ : Array[String], args? : Array[(String, GqlType)], is_repeatable? : Bool, on_field? : ((Json, Map[String, Json]) -> Json)?) -> Unit
 pub fn Schema::directive_def_by_name(Self, String) -> DirectiveDef?
-pub fn Schema::enum_(Self, String, Array[String], deprecated? : Array[(String, String)]) -> Unit
+pub fn Schema::enum_(Self, String, Array[String], deprecated? : Array[(String, String)], description? : String, descriptions? : Array[(String, String)]) -> Unit
 pub fn Schema::enum_by_name(Self, String) -> EnumType?
 pub fn Schema::field_applied_directives(Self, String, String) -> Array[AppliedDirective]
 pub fn Schema::field_has_directive(Self, String, String, String) -> Bool
-pub fn Schema::input(Self, String) -> ObjectType
-pub fn Schema::interface(Self, String) -> ObjectType
+pub fn Schema::input(Self, String, description? : String) -> ObjectType
+pub fn Schema::interface(Self, String, description? : String) -> ObjectType
 pub fn Schema::new(query? : String) -> Self
-pub fn Schema::object(Self, String) -> ObjectType
-pub fn Schema::scalar(Self, String, serialize? : (Json) -> Json, parse_value? : (Json) -> Json) -> Unit
+pub fn Schema::object(Self, String, description? : String) -> ObjectType
+pub fn Schema::scalar(Self, String, serialize? : (Json) -> Json, parse_value? : (Json) -> Json, spec_url? : String) -> Unit
 pub fn Schema::scalar_by_name(Self, String) -> ScalarType?
 pub fn Schema::set_mutation(Self, String) -> Unit
 pub fn Schema::set_subscription(Self, String) -> Unit
