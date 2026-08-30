@@ -145,7 +145,7 @@ test "non-null field returning null bubbles to an error" {
   assert_eq(
     res.stringify(),
     (
-      #|{"data":null,"errors":[{"message":"Cannot return null for non-nullable field","path":["mustFail"]}]}
+      #|{"data":null,"errors":[{"message":"Cannot return null for non-nullable field","locations":[{"line":1,"column":3}],"path":["mustFail"]}]}
     ),
   )
 }
@@ -219,7 +219,7 @@ test "validation rejects an unknown field" {
   assert_eq(
     res.stringify(),
     (
-      #|{"errors":[{"message":"Cannot query field 'nope' on type 'User'"}]}
+      #|{"errors":[{"message":"Cannot query field 'nope' on type 'User'","locations":[{"line":1,"column":19}]}]}
     ),
   )
 }

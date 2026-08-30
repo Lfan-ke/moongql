@@ -6,6 +6,15 @@
 /// canonical GraphQL string, so a parse→print round-trip is testable.
 
 ///|
+/// The 1-based line and column of a node's first token. Every node an error can
+/// point back at carries one, so a validation or field error can answer with the
+/// `locations` entry the spec requires (§7.1.2).
+pub(all) struct Pos {
+  line : Int
+  col : Int
+} derive(Eq)
+
+///|
 /// A parsed GraphQL document: an ordered list of executable definitions.
 pub(all) struct Document {
   definitions : Array[Definition]
@@ -36,6 +45,7 @@ pub(all) struct OperationDefinition {
   variable_definitions : Array[VariableDefinition]
   directives : Array[Directive]
   selection_set : Array[Selection]
+  pos : Pos
 }
 
 ///|
@@ -46,6 +56,7 @@ pub(all) struct VariableDefinition {
   typ : TypeRef
   default_value : Value?
   directives : Array[Directive]
+  pos : Pos
 }
 
 ///|
@@ -65,6 +76,7 @@ pub(all) struct FragmentDefinition {
   type_condition : String
   directives : Array[Directive]
   selection_set : Array[Selection]
+  pos : Pos
 }
 
 ///|
@@ -72,8 +84,8 @@ pub(all) struct FragmentDefinition {
 /// inline `... on Type { ... }` fragment.
 pub(all) enum Selection {
   FieldSel(QueryField)
-  FragmentSpreadSel(String, Array[Directive])
-  InlineFragmentSel(String?, Array[Directive], Array[Selection])
+  FragmentSpreadSel(String, Array[Directive], Pos)
+  InlineFragmentSel(String?, Array[Directive], Array[Selection], Pos)
 }
 
 ///|
@@ -85,6 +97,7 @@ pub(all) struct QueryField {
   arguments : Array[Argument]
   directives : Array[Directive]
   selection_set : Array[Selection]
+  pos : Pos
 }
 
 ///|
@@ -92,6 +105,7 @@ pub(all) struct QueryField {
 pub(all) struct Argument {
   name : String
   value : Value
+  pos : Pos
 }
 
 ///|
@@ -99,6 +113,7 @@ pub(all) struct Argument {
 pub(all) struct Directive {
   name : String
   arguments : Array[Argument]
+  pos : Pos
 }
 
 ///|
@@ -280,8 +295,8 @@ fn selection_sdl(sel : Selection, depth : Int) -> String {
       }
       sb.to_string()
     }
-    FragmentSpreadSel(name, ds) => "..." + name + directives_sdl(ds)
-    InlineFragmentSel(cond, ds, sels) => {
+    FragmentSpreadSel(name, ds, _) => "..." + name + directives_sdl(ds)
+    InlineFragmentSel(cond, ds, sels, _) => {
       let sb = StringBuilder()
       sb.write_string("...")
       match cond {

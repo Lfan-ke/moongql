@@ -218,7 +218,7 @@ test "named fragment definition and spread" {
       match op.selection_set[0] {
         FieldSel(f) =>
           match f.selection_set[0] {
-            FragmentSpreadSel(name, _) => assert_eq(name, "userFields")
+            FragmentSpreadSel(name, _, _) => assert_eq(name, "userFields")
             _ => fail("expected a fragment spread")
           }
         _ => fail("expected a field")
@@ -243,7 +243,7 @@ test "inline fragment with type condition" {
       match op.selection_set[0] {
         FieldSel(f) =>
           match f.selection_set[0] {
-            InlineFragmentSel(cond, _, sels) => {
+            InlineFragmentSel(cond, _, sels, _) => {
               assert_eq(cond is Some("Droid"), true)
               assert_eq(sels.length(), 1)
             }

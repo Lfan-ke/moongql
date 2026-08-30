@@ -6,11 +6,33 @@ fn request_body(query : String, variables : Json) -> Bytes {
 }
 
 ///|
+/// The `content-type` a GraphQL POST must carry, plus the media type this client
+/// wants back.
+fn headers(accept : String) -> Array[(String, String)] {
+  [("content-type", "application/json"), ("accept", accept)]
+}
+
+///|
+/// The response's `content-type`, for printing.
+fn ctype(resp : @moonasgi.TestResponse) -> String {
+  match resp.header("content-type") {
+    Some(h) => h
+    None => "?"
+  }
+}
+
+///|
 /// The GraphQL-over-HTTP transport. `graphql_handler` turns a schema into a
 /// moonasgi request handler; moonasgi's `TestClient` drives it over the synchronous
-/// seam (no socket). A POST runs the query and returns `200 application/json` with
-/// the `{ data }` body, request variables bind, and a GET serves the GraphiQL IDE.
-/// `graphiql_html` renders that page pointed at any endpoint path.
+/// seam (no socket).
+///
+/// A POST carries an `application/json` body — one request, or an array of them
+/// for a batch. `Accept` picks the response media type: ask for
+/// `application/graphql-response+json` and the status separates a request error
+/// (400, the document never ran) from a field error (200); ask for
+/// `application/json` and everything is a 200. A GET carries the same fields in
+/// its query string, and without a `query` serves the GraphiQL IDE, which
+/// `graphiql_html` also renders standalone for any endpoint path.
 ///
 ///     moon run examples/22-http-server
 #coverage.skip
@@ -34,19 +56,52 @@ fn main {
   })
   let client = @moonasgi.TestClient::new(@moongql.graphql_handler(s, r))
   let body = request_body("{ user(id: \"1\") { id name } }", Json::null())
-  let resp = client.post("/graphql", body~)
+  let resp = client.post("/graphql", body~, headers=headers("application/json"))
   println("POST status: \{resp.status}")
-  let ctype = match resp.header("content-type") {
-    Some(h) => h
-    None => "?"
-  }
-  println("content-type: " + ctype)
+  println("content-type: " + ctype(resp))
   println("body: " + resp.text())
   let vars : Json = { "uid": "1" }
   let body2 = request_body(
     "query ($uid: ID!) { user(id: $uid) { name } }", vars,
   )
-  println("vars body: " + client.post("/graphql", body=body2).text())
+  println(
+    "vars body: " +
+    client
+    .post("/graphql", body=body2, headers=headers("application/json"))
+    .text(),
+  )
+  // Without a content type the server will not guess what the bytes are.
+  println("no content-type: \{client.post("/graphql", body~).status}")
+  let spec = client.post(
+    "/graphql",
+    body~,
+    headers=headers("application/graphql-response+json"),
+  )
+  println("spec media type: " + ctype(spec) + " status: \{spec.status}")
+  let bad = client.post(
+    "/graphql",
+    body=request_body("{ user(id: \"1\") { nope } }", Json::null()),
+    headers=headers("application/graphql-response+json"),
+  )
+  println("request error status: \{bad.status}")
+  let batch : Json = [
+    { "query": "{ user(id: \"1\") { name } }" },
+    { "query": "{ hero: user(id: \"1\") { id } }" },
+  ]
+  println(
+    "batch: " +
+    client
+    .post(
+      "/graphql",
+      body=@utf8.encode(batch.stringify()),
+      headers=headers("application/json"),
+    )
+    .text(),
+  )
+  let got = client.get(
+    "/graphql?query=%7B%20user(id%3A%20%221%22)%20%7B%20name%20%7D%20%7D",
+  )
+  println("GET query: " + got.text())
   let page = client.get("/graphql")
   println("GET status: \{page.status}")
   println("serves GraphiQL: \{page.text().contains("<title>GraphiQL</title>")}")

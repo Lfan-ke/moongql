@@ -72,6 +72,7 @@ fn Exec::execute_subscription_event(
         root_type.name +
         "'",
         fpath,
+        first.pos,
       )
       let m : Map[String, Json] = Map([])
       m[key] = Json::null()
@@ -128,9 +129,7 @@ pub fn create_source_event_stream(
 ) -> SubscriptionResult {
   let doc = parse(query) catch {
     GqlSyntaxError(m, line, col) =>
-      return RequestError([
-        { message: m, path: [], locations: [(line, col)], extensions: Map([]), },
-      ])
+      return RequestError([GqlError::at(m, { line, col, })])
   }
   let verrors = validate(schema, doc)
   if verrors.length() > 0 {
@@ -142,7 +141,10 @@ pub fn create_source_event_stream(
   }
   if not(prepared.operation.operation is Subscription) {
     return RequestError([
-      GqlError::msg("execute_subscription requires a subscription operation"),
+      GqlError::at(
+        "execute_subscription requires a subscription operation",
+        prepared.operation.pos,
+      ),
     ])
   }
   let fragments = collect_fragments(doc)
@@ -175,7 +177,10 @@ pub fn create_source_event_stream(
   )
   if keys.length() != 1 {
     return RequestError([
-      GqlError::msg("Subscription operation must select exactly one root field"),
+      GqlError::at(
+        "Subscription operation must select exactly one root field",
+        prepared.operation.pos,
+      ),
     ])
   }
   let key = keys[0]
@@ -186,10 +191,11 @@ pub fn create_source_event_stream(
   let root_field = group[0]
   if is_meta_field(root_field.name) {
     return RequestError([
-      GqlError::msg(
+      GqlError::at(
         "Introspection field '" +
         root_field.name +
         "' cannot be a subscription root",
+        root_field.pos,
       ),
     ])
   }
@@ -198,12 +204,13 @@ pub fn create_source_event_stream(
     Some(f) => f
     None =>
       return RequestError([
-        GqlError::msg(
+        GqlError::at(
           "No subscription source registered for '" +
           root_type.name +
           "." +
           root_field.name +
           "'",
+          root_field.pos,
         ),
       ])
   }
@@ -219,10 +226,10 @@ pub fn create_source_event_stream(
     field_name: root_field.name,
   }
   let events = source(info) catch {
-    ResolverError(m) => return RequestError([GqlError::msg(m)])
+    ResolverError(m) => return RequestError([GqlError::at(m, root_field.pos)])
     ResolverErrorExt(m, ext) =>
       return RequestError([
-        { message: m, path: [], locations: [], extensions: ext, },
+        { message: m, path: [], locations: [root_field.pos], extensions: ext, },
       ])
   }
   let out : Array[Json] = []

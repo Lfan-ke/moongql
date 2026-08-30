@@ -4,17 +4,21 @@
 /// moonasgi WebSocket seam. A `WebSocketHandler` whose `on_receive` folds each
 /// inbound control message into the frames a server sends back:
 ///
-/// - `connection_init` -> `connection_ack` (a second init closes with 4429)
+/// - `connection_init` -> `connection_ack` (a second init closes with 4429); its
+///   `payload` becomes the connection parameters every operation sees on its
+///   context
 /// - `ping` -> `pong` (echoing any payload)
 /// - `subscribe` -> a run of `next` messages, one per event, then `complete`;
 ///   a request that fails to start (parse/validation/no-source) yields a single
 ///   `error` message instead, per the spec's distinction between a request error
 ///   and an execution result
-/// - `complete` (client) -> accepted; the operation is already finished
+/// - `complete` (client) -> the operation id is released for reuse
 ///
-/// A `subscribe` before `connection_init` closes with 4401, a reused operation
-/// id closes with 4409 (ids are single-use per connection), and a binary frame
-/// or an unparseable message closes with 4400.
+/// A `subscribe` before `connection_init` closes with 4401, and a `subscribe`
+/// naming an id that is currently running closes with 4409; an id whose operation
+/// has finished is free again, which is what the protocol means by unique "among
+/// all *active* subscribers". A binary frame or an unparseable message closes with
+/// 4400.
 ///
 /// The source is the synchronous pull stream from `create_source_event_stream`,
 /// so a subscription's events are delivered as an ordered `next` run followed by
@@ -24,26 +28,136 @@
 /// native variant that lifts this same message handling onto a real socket.
 
 ///|
-/// Per-connection protocol state: whether `connection_init` has been seen, and
-/// the operation ids already used (single-use, so a duplicate is a 4409).
-priv struct GqlWsState {
+/// One `graphql-transport-ws` connection: the schema it serves plus the protocol
+/// state a connection carries — whether `connection_init` has arrived, the
+/// parameters it brought, the operation ids currently running, and the two timers
+/// the protocol defines.
+///
+/// This package has no async runtime and no clock of its own, so the timers are
+/// state plus a transition and nothing more: a server drives them by calling
+/// `tick` with a millisecond reading of a monotonic clock, as often as it likes
+/// (once a second is plenty), and sending whatever frames come back. Nothing else
+/// starts the connection-init countdown or emits a keep-alive `ping`.
+pub struct GqlWs {
+  schema : Schema
+  resolvers : Resolvers
+  subscribers : Subscribers
+  root_value : Json
+  context : Json
+  init_timeout : Int64
+  ping_interval : Int64
   mut initialized : Bool
-  used : Map[String, Unit]
+  mut params : Json
+  mut opened : Int64?
+  mut pinged : Int64
+  active : Map[String, Unit]
 }
 
 ///|
-/// Build a `graphql-transport-ws` WebSocket handler for `schema` / `resolvers` /
-/// `subscribers`. `root_value` and `context` are threaded to every operation the
-/// way `execute` threads them. Negotiates the `graphql-transport-ws` subprotocol
-/// when the client offers it.
-pub fn graphql_ws_handler(
+/// Open a connection's protocol state for `schema` / `resolvers` / `subscribers`.
+/// `root_value` and `context` are threaded to every operation the way `execute`
+/// threads them.
+///
+/// `init_timeout` is how long a client may take to send `connection_init` before
+/// `tick` closes the socket with 4408, and `ping_interval` how long the server
+/// waits between keep-alive `ping` frames; both are milliseconds, and either is
+/// switched off by passing zero.
+pub fn GqlWs::new(
   schema : Schema,
   resolvers : Resolvers,
   subscribers : Subscribers,
   root_value? : Json = Json::null(),
   context? : Json = Json::null(),
-) -> @moonasgi.WebSocketHandler {
-  let state : GqlWsState = { initialized: false, used: Map([]), }
+  init_timeout? : Int64 = 3000,
+  ping_interval? : Int64 = 12000,
+) -> GqlWs {
+  {
+    schema,
+    resolvers,
+    subscribers,
+    root_value,
+    context,
+    init_timeout,
+    ping_interval,
+    initialized: false,
+    params: Json::null(),
+    opened: None,
+    pinged: 0,
+    active: Map([]),
+  }
+}
+
+///|
+/// Handle one inbound message, returning the frames to send back.
+pub fn GqlWs::recv(
+  self : GqlWs,
+  msg : @moonasgi.WsMessage,
+) -> Array[@moonasgi.WsSend] {
+  match msg {
+    @moonasgi.Text(t) => self.recv_text(t)
+    @moonasgi.Binary(_) =>
+      [@moonasgi.Close(code=4400, reason="binary frames are not allowed")]
+  }
+}
+
+///|
+/// Drive the connection's timers from a monotonic clock reading in milliseconds,
+/// returning the frames the elapsed time calls for: the 4408 close when
+/// `connection_init` did not arrive in time, or a keep-alive `ping`.
+///
+/// The first call starts the clock, so a server should tick as soon as it has
+/// accepted the socket and keep ticking for as long as it holds it.
+pub fn GqlWs::tick(self : GqlWs, now : Int64) -> Array[@moonasgi.WsSend] {
+  let since = match self.opened {
+    None => {
+      self.opened = Some(now)
+      self.pinged = now
+      return []
+    }
+    Some(t0) => now - t0
+  }
+  if not(self.initialized) {
+    if self.init_timeout > 0 && since >= self.init_timeout {
+      return [
+        @moonasgi.Close(code=4408, reason="Connection initialisation timeout"),
+      ]
+    }
+    return []
+  }
+  if self.ping_interval > 0 && now - self.pinged >= self.ping_interval {
+    self.pinged = now
+    return [@moonasgi.SendText(gql_ws_message("ping", None, None))]
+  }
+  []
+}
+
+///|
+/// Claim operation `id` for an operation that is starting, answering `false` when
+/// the id is already running — the caller must then close the socket with 4409.
+///
+/// `recv` claims and releases an id itself, because a pull source is drained
+/// before it returns. A server streaming a live source claims the id when it
+/// starts the task and calls `release` when the task sends its last frame; that is
+/// what keeps 4409 meaning "still running" rather than "used once".
+pub fn GqlWs::claim(self : GqlWs, id : String) -> Bool {
+  if self.active.get(id) is Some(_) {
+    return false
+  }
+  self.active[id] = ()
+  true
+}
+
+///|
+/// Release operation `id`, freeing it for reuse. Called after the operation's
+/// terminating `complete` or `error` has been sent.
+pub fn GqlWs::release(self : GqlWs, id : String) -> Unit {
+  self.active.remove(id)
+}
+
+///|
+/// The connection as a moonasgi `WebSocketHandler`, negotiating the
+/// `graphql-transport-ws` subprotocol when the client offers it.
+pub fn GqlWs::handler(self : GqlWs) -> @moonasgi.WebSocketHandler {
   @moonasgi.WebSocketHandler::new(
     on_connect=fn(scope) {
       if scope.subprotocols.contains("graphql-transport-ws") {
@@ -52,17 +166,26 @@ pub fn graphql_ws_handler(
         @moonasgi.Accept(subprotocol=None, headers=[])
       }
     },
-    on_receive=fn(msg) {
-      match msg {
-        @moonasgi.Text(t) =>
-          handle_gql_ws_text(
-            state, schema, resolvers, subscribers, root_value, context, t,
-          )
-        @moonasgi.Binary(_) =>
-          [@moonasgi.Close(code=4400, reason="binary frames are not allowed")]
-      }
-    },
+    on_receive=fn(msg) { self.recv(msg) },
   )
+}
+
+///|
+/// Build a `graphql-transport-ws` WebSocket handler for `schema` / `resolvers` /
+/// `subscribers`. `root_value` and `context` are threaded to every operation the
+/// way `execute` threads them. Negotiates the `graphql-transport-ws` subprotocol
+/// when the client offers it.
+///
+/// The handler owns its connection state, so nothing can drive the protocol's
+/// timers: build a `GqlWs` and take its `handler` when the server can tick.
+pub fn graphql_ws_handler(
+  schema : Schema,
+  resolvers : Resolvers,
+  subscribers : Subscribers,
+  root_value? : Json = Json::null(),
+  context? : Json = Json::null(),
+) -> @moonasgi.WebSocketHandler {
+  GqlWs::new(schema, resolvers, subscribers, root_value~, context~).handler()
 }
 
 ///|
@@ -93,17 +216,32 @@ fn gql_ws_errors_json(errors : Array[GqlError]) -> Json {
 }
 
 ///|
+/// The context an operation on this connection runs with: the configured context
+/// value, carrying the `connection_init` payload under `connectionParams` so a
+/// resolver can read the credentials the client connected with. A context that is
+/// not an object has nothing to merge into and is passed through unchanged.
+fn GqlWs::op_context(self : GqlWs) -> Json {
+  if self.params is Null {
+    return self.context
+  }
+  match self.context {
+    Object(m) => {
+      let merged : Map[String, Json] = Map([])
+      for k, v in m {
+        merged[k] = v
+      }
+      merged["connectionParams"] = self.params
+      merged.to_json()
+    }
+    Null => jobj([("connectionParams", self.params)])
+    other => other
+  }
+}
+
+///|
 /// Handle one text frame, returning the frames to send back. Parses the control
 /// message and dispatches on its `type`.
-fn handle_gql_ws_text(
-  state : GqlWsState,
-  schema : Schema,
-  resolvers : Resolvers,
-  subscribers : Subscribers,
-  root_value : Json,
-  context : Json,
-  text : String,
-) -> Array[@moonasgi.WsSend] {
+fn GqlWs::recv_text(self : GqlWs, text : String) -> Array[@moonasgi.WsSend] {
   let json = @json.parse(text) catch {
     _ => return [@moonasgi.Close(code=4400, reason="invalid JSON")]
   }
@@ -117,39 +255,42 @@ fn handle_gql_ws_text(
   }
   match mtype {
     "connection_init" =>
-      if state.initialized {
+      if self.initialized {
         [@moonasgi.Close(code=4429, reason="Too many initialisation requests")]
       } else {
-        state.initialized = true
+        self.initialized = true
+        self.params = match obj.get("payload") {
+          Some(p) => p
+          None => Json::null()
+        }
         [@moonasgi.SendText(gql_ws_message("connection_ack", None, None))]
       }
     "ping" =>
       [@moonasgi.SendText(gql_ws_message("pong", None, obj.get("payload")))]
     "pong" => []
-    // The client wants to stop an operation. Finite pull sources have already
-    // completed, so there is nothing to cancel — accept it.
-    "complete" => []
-    "subscribe" =>
-      handle_subscribe(
-        state, schema, resolvers, subscribers, root_value, context, obj,
-      )
+    // The client wants to stop an operation. A pull source has already finished,
+    // so there is nothing to cancel — but the id it was running under is now free.
+    "complete" => {
+      match obj.get("id") {
+        Some(String(i)) => self.release(i)
+        _ => ()
+      }
+      []
+    }
+    "subscribe" => self.subscribe(obj)
     _ => [@moonasgi.Close(code=4400, reason="invalid message type: " + mtype)]
   }
 }
 
 ///|
 /// Handle a `subscribe` message: authorise, claim the id, run the operation, and
-/// map the outcome to `next`* + `complete` (success) or a single `error`.
-fn handle_subscribe(
-  state : GqlWsState,
-  schema : Schema,
-  resolvers : Resolvers,
-  subscribers : Subscribers,
-  root_value : Json,
-  context : Json,
+/// map the outcome to `next`* + `complete` (success) or a single `error`. Either
+/// way the operation is over by the time the frames go out, so the id is released.
+fn GqlWs::subscribe(
+  self : GqlWs,
   obj : Map[String, Json],
 ) -> Array[@moonasgi.WsSend] {
-  if not(state.initialized) {
+  if not(self.initialized) {
     return [@moonasgi.Close(code=4401, reason="Unauthorized")]
   }
   let id = match obj.get("id") {
@@ -157,7 +298,7 @@ fn handle_subscribe(
     _ =>
       return [@moonasgi.Close(code=4400, reason="subscribe requires an 'id'")]
   }
-  if state.used.get(id) is Some(_) {
+  if not(self.claim(id)) {
     return [
       @moonasgi.Close(
         code=4409,
@@ -165,7 +306,18 @@ fn handle_subscribe(
       ),
     ]
   }
-  state.used[id] = ()
+  let sends = self.run(id, obj)
+  self.release(id)
+  sends
+}
+
+///|
+/// Run the operation a claimed `subscribe` message describes.
+fn GqlWs::run(
+  self : GqlWs,
+  id : String,
+  obj : Map[String, Json],
+) -> Array[@moonasgi.WsSend] {
   let payload = match obj.get("payload") {
     Some(Object(p)) => p
     _ =>
@@ -190,7 +342,8 @@ fn handle_subscribe(
     Some(String(n)) => Some(n)
     _ => None
   }
-  match operation_type_of(schema, query, op_name) {
+  let context = self.op_context()
+  match operation_type_of(self.schema, query, op_name) {
     Err(errs) =>
       [
         @moonasgi.SendText(
@@ -200,13 +353,13 @@ fn handle_subscribe(
     Ok(Subscription) =>
       match
         create_source_event_stream(
-          schema,
-          resolvers,
-          subscribers,
+          self.schema,
+          self.resolvers,
+          self.subscribers,
           query,
           variables~,
           operation_name=op_name,
-          root_value~,
+          root_value=self.root_value,
           context~,
         ) {
         RequestError(errs) =>
@@ -232,12 +385,12 @@ fn handle_subscribe(
       // A query or mutation over the subscribe transport: a single execution
       // result, then complete.
       let result = execute(
-        schema,
-        resolvers,
+        self.schema,
+        self.resolvers,
         query,
         variables~,
         operation_name=op_name,
-        root_value~,
+        root_value=self.root_value,
         context~,
       )
       [
@@ -270,9 +423,7 @@ fn operation_type_of(
 ) -> Result[OperationType, Array[GqlError]] {
   let doc = parse(query) catch {
     GqlSyntaxError(m, line, col) =>
-      return Err([
-        { message: m, path: [], locations: [(line, col)], extensions: Map([]), },
-      ])
+      return Err([GqlError::at(m, { line, col, })])
   }
   let verrors = validate(schema, doc)
   if verrors.length() > 0 {

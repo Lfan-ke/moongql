@@ -1,7 +1,7 @@
 ///|
-/// A client control frame `{ type }` as a text message.
-fn ctrl_frame(type_ : String) -> @moonasgi.WsMessage {
-  let m : Json = { "type": type_.to_json() }
+/// A `connection_init` frame carrying the connection's parameters.
+fn init_frame(params : Json) -> @moonasgi.WsMessage {
+  let m : Json = { "type": "connection_init", "payload": params }
   @moonasgi.Text(m.stringify())
 }
 
@@ -27,11 +27,28 @@ fn sent_texts(sends : Array[@moonasgi.WsSend]) -> Array[String] {
 }
 
 ///|
-/// Subscriptions over the `graphql-transport-ws` protocol. `graphql_ws_handler`
-/// returns a WebSocket handler whose `on_receive` maps one client frame to the
-/// frames sent back — the synchronous seam under the async socket. A
-/// `connection_init` is answered with `connection_ack`; a `subscribe` streams one
-/// `next` per source event and closes with `complete`.
+/// The close code in a reply, or -1 when it did not close.
+fn close_code(sends : Array[@moonasgi.WsSend]) -> Int {
+  for s in sends {
+    if s is @moonasgi.Close(code~, ..) {
+      return code
+    }
+  }
+  -1
+}
+
+///|
+/// Subscriptions over the `graphql-transport-ws` protocol. `GqlWs` is one
+/// connection's protocol state and `recv` maps a client frame to the frames sent
+/// back — the synchronous seam under the async socket. A `connection_init` is
+/// answered with `connection_ack` and its payload reaches every resolver's context
+/// under `connectionParams`; a `subscribe` streams one `next` per source event and
+/// closes with `complete`, which frees its id for the next operation.
+///
+/// The protocol's two timers are state here, not threads: `tick` takes a
+/// millisecond clock reading from the server and hands back the 4408 close for a
+/// `connection_init` that never arrived, or a keep-alive `ping`. `graphql_ws_handler`
+/// wraps a connection whose timers nothing drives.
 ///
 ///     moon run examples/23-graphql-ws
 #coverage.skip
@@ -44,14 +61,37 @@ fn main {
   sub.field("ticks", @moongql.NonNull(@moongql.Scalar("Int")))
   let subs = @moongql.Subscribers::new()
   subs.field("Subscription", "ticks", _info => [(1).to_json(), (2).to_json()])
-  let h = @moongql.graphql_ws_handler(s, @moongql.Resolvers::new(), subs)
-  for t in sent_texts((h.on_receive)(ctrl_frame("connection_init"))) {
+  let r = @moongql.Resolvers::new()
+  r.field("Query", "ok", info => {
+    match info.ctx {
+      Object(m) =>
+        match m.get("connectionParams") {
+          Some(p) => p
+          None => "no params".to_json()
+        }
+      _ => "no context".to_json()
+    }
+  })
+  let ws = @moongql.GqlWs::new(s, r, subs)
+  let params : Json = { "token": "heke1228" }
+  for t in sent_texts(ws.recv(init_frame(params))) {
     println("ack: " + t)
   }
-  for
-    t in sent_texts(
-      (h.on_receive)(subscribe_frame("1", "subscription { ticks }")),
-    ) {
+  for t in sent_texts(ws.recv(subscribe_frame("1", "subscription { ticks }"))) {
     println("frame: " + t)
   }
+  // The id was released with the `complete` above, so the client may reuse it.
+  println(
+    "id reusable: \{close_code(ws.recv(subscribe_frame("1", "subscription { ticks }"))) == -1}",
+  )
+  for t in sent_texts(ws.recv(subscribe_frame("2", "{ ok }"))) {
+    println("params: " + t)
+  }
+  ws.tick(0L) |> ignore
+  for t in sent_texts(ws.tick(12000L)) {
+    println("keep-alive: " + t)
+  }
+  let silent = @moongql.GqlWs::new(s, r, subs, init_timeout=3000)
+  silent.tick(0L) |> ignore
+  println("no init after 3s: \{close_code(silent.tick(3000L))}")
 }

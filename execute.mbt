@@ -73,14 +73,23 @@ pub fn Resolvers::field(
 pub(all) struct GqlError {
   message : String
   path : Array[Json]
-  locations : Array[(Int, Int)]
+  locations : Array[Pos]
   extensions : Map[String, Json]
 }
 
 ///|
-/// Build an error carrying only a message (used for request-level errors).
+/// Build an error carrying only a message, for the request-level failures that
+/// cannot be pinned to a point in the document (an empty document, an unknown
+/// operation name).
 fn GqlError::msg(message : String) -> GqlError {
   { message, path: [], locations: [], extensions: Map([]), }
+}
+
+///|
+/// Build an error carrying a message and the position of the node it is about.
+/// §7.1.2 requires `locations` on every error that can name one.
+fn GqlError::at(message : String, pos : Pos) -> GqlError {
+  { message, path: [], locations: [pos], extensions: Map([]), }
 }
 
 ///|
@@ -90,8 +99,8 @@ fn GqlError::to_json(self : GqlError) -> Json {
   let entries : Array[(String, Json)] = [("message", self.message.to_json())]
   if self.locations.length() > 0 {
     let locs : Array[Json] = []
-    for lc in self.locations {
-      locs.push(jobj([("line", lc.0.to_json()), ("column", lc.1.to_json())]))
+    for p in self.locations {
+      locs.push(jobj([("line", p.line.to_json()), ("column", p.col.to_json())]))
     }
     entries.push(("locations", locs.to_json()))
   }
@@ -155,9 +164,15 @@ priv struct Exec {
 }
 
 ///|
-/// Record a field error at `path`.
-fn Exec::add_error(self : Exec, message : String, path : Array[Json]) -> Unit {
-  self.errors.push({ message, path, locations: [], extensions: Map([]), })
+/// Record a field error at `path`, pointed at the field in the document that
+/// produced it.
+fn Exec::add_error(
+  self : Exec,
+  message : String,
+  path : Array[Json],
+  pos : Pos,
+) -> Unit {
+  self.errors.push({ message, path, locations: [pos], extensions: Map([]), })
 }
 
 ///|
@@ -167,9 +182,10 @@ fn Exec::add_error_ext(
   self : Exec,
   message : String,
   path : Array[Json],
+  pos : Pos,
   extensions : Map[String, Json],
 ) -> Unit {
-  self.errors.push({ message, path, locations: [], extensions, })
+  self.errors.push({ message, path, locations: [pos], extensions, })
 }
 
 ///|
@@ -370,7 +386,7 @@ fn Exec::collect_fields(
           }
         }
       }
-      FragmentSpreadSel(name, dirs) => {
+      FragmentSpreadSel(name, dirs, _) => {
         if not(self.should_include(dirs)) {
           continue
         }
@@ -392,7 +408,7 @@ fn Exec::collect_fields(
           None => ()
         }
       }
-      InlineFragmentSel(cond, dirs, sels) => {
+      InlineFragmentSel(cond, dirs, sels, _) => {
         if not(self.should_include(dirs)) {
           continue
         }
@@ -461,11 +477,11 @@ fn Exec::resolve_raw(
       let info = { parent, args, ctx: self.ctx, field_name: name, }
       resolver(info) catch {
         ResolverError(m) => {
-          self.add_error(m, path)
+          self.add_error(m, path, field.pos)
           Json::null()
         }
         ResolverErrorExt(m, ext) => {
-          self.add_error_ext(m, path, ext)
+          self.add_error_ext(m, path, field.pos, ext)
           Json::null()
         }
       }
@@ -544,6 +560,7 @@ fn Exec::union_member(
   u : UnionType,
   value : Json,
   path : Array[Json],
+  pos : Pos,
 ) -> ObjectType? {
   let tn = match value {
     Object(m) =>
@@ -559,6 +576,7 @@ fn Exec::union_member(
       u.name +
       "': value has no __typename",
       path,
+      pos,
     )
     return None
   }
@@ -572,13 +590,14 @@ fn Exec::union_member(
     self.add_error(
       "Type '" + tn + "' is not a member of union '" + u.name + "'",
       path,
+      pos,
     )
     return None
   }
   match self.schema.type_by_name(tn) {
     Some(t) => Some(t)
     None => {
-      self.add_error("Union member type '" + tn + "' is not defined", path)
+      self.add_error("Union member type '" + tn + "' is not defined", path, pos)
       None
     }
   }
@@ -609,11 +628,14 @@ fn Exec::complete(
   fields : Array[QueryField],
   path : Array[Json],
 ) -> Json raise NullBubble {
+  // Every field in a group answers under one response key, so the first one is
+  // the point in the document this value belongs to.
+  let pos = fields[0].pos
   match ftype {
     NonNull(inner) => {
       let r = self.complete(inner, value, fields, path)
       if r is Null {
-        self.add_error("Cannot return null for non-nullable field", path)
+        self.add_error("Cannot return null for non-nullable field", path, pos)
         raise NullBubble
       }
       r
@@ -631,7 +653,7 @@ fn Exec::complete(
           out.to_json()
         }
         _ => {
-          self.add_error("Expected a list value", path)
+          self.add_error("Expected a list value", path, pos)
           Json::null()
         }
       }
@@ -644,7 +666,7 @@ fn Exec::complete(
           Null => Json::null()
           _ =>
             if self.schema.union_by_name(name) is Some(u) {
-              match self.union_member(u, value, path) {
+              match self.union_member(u, value, path, pos) {
                 Some(obj) =>
                   self.execute_selection_set(
                     obj,
@@ -666,7 +688,11 @@ fn Exec::complete(
                   )
                 }
                 None => {
-                  self.add_error("Unknown output type '" + name + "'", path)
+                  self.add_error(
+                    "Unknown output type '" + name + "'",
+                    path,
+                    pos,
+                  )
                   Json::null()
                 }
               }
@@ -703,6 +729,7 @@ fn Exec::execute_field(
       self.add_error(
         "Cannot query field '" + first.name + "' on type '" + obj.name + "'",
         path,
+        first.pos,
       )
       Json::null()
     }
@@ -837,14 +864,19 @@ fn select_operation(
       match schema.mutation {
         Some(m) => m
         None =>
-          return Err(GqlError::msg("Schema is not configured for mutations"))
+          return Err(
+            GqlError::at("Schema is not configured for mutations", chosen.pos),
+          )
       }
     Subscription =>
       match schema.subscription {
         Some(s) => s
         None =>
           return Err(
-            GqlError::msg("Schema is not configured for subscriptions"),
+            GqlError::at(
+              "Schema is not configured for subscriptions",
+              chosen.pos,
+            ),
           )
       }
   }
@@ -896,10 +928,11 @@ fn coerce_variables(
       Some(v) => {
         if required && v is Null {
           errors.push(
-            GqlError::msg(
+            GqlError::at(
               "Variable '$" +
               vd.variable +
               "' of non-null type must not be null.",
+              vd.pos,
             ),
           )
         }
@@ -911,10 +944,11 @@ fn coerce_variables(
           None =>
             if required {
               errors.push(
-                GqlError::msg(
+                GqlError::at(
                   "Variable '$" +
                   vd.variable +
                   "' of required type was not provided.",
+                  vd.pos,
                 ),
               )
             }
@@ -925,10 +959,16 @@ fn coerce_variables(
 }
 
 ///|
-/// Assemble the final `{ data?, errors? }` response object. `data` is omitted
-/// for request-level failures (no execution began) and included (possibly null)
-/// once execution starts; `errors` is omitted when empty.
-fn build_response(data : Json?, errors : Array[GqlError]) -> Json {
+/// Assemble the final `{ errors?, data?, extensions? }` response object. `data`
+/// is omitted for request-level failures (no execution began) and included
+/// (possibly null) once execution starts; `errors` is omitted when empty, and so
+/// is the server's `extensions` map (§7.1, the entry reserved for whatever a
+/// server wants to say alongside the result — timings, a trace id, a cache hint).
+fn build_response(
+  data : Json?,
+  errors : Array[GqlError],
+  extensions? : Map[String, Json] = Map([]),
+) -> Json {
   let entries : Array[(String, Json)] = []
   match data {
     Some(d) => entries.push(("data", d))
@@ -940,6 +980,9 @@ fn build_response(data : Json?, errors : Array[GqlError]) -> Json {
       arr.push(e.to_json())
     }
     entries.push(("errors", arr.to_json()))
+  }
+  if !extensions.is_empty() {
+    entries.push(("extensions", extensions.to_json()))
   }
   jobj(entries)
 }
@@ -977,9 +1020,10 @@ fn Exec::run_root(
 ///
 /// `variables` supplies operation variable values, `operation_name` picks an
 /// operation when the document has several, `root_value` seeds the root object,
-/// and `context` is threaded to every resolver. The function never raises: parse
-/// and validation failures yield an `errors`-only response, and field errors are
-/// collected alongside partial `data`.
+/// `context` is threaded to every resolver, and `extensions` is the server's own
+/// `extensions` entry on the response (§7.1), emitted when non-empty. The
+/// function never raises: parse and validation failures yield an `errors`-only
+/// response, and field errors are collected alongside partial `data`.
 pub fn execute(
   schema : Schema,
   resolvers : Resolvers,
@@ -988,20 +1032,23 @@ pub fn execute(
   operation_name? : String? = None,
   root_value? : Json = Json::null(),
   context? : Json = Json::null(),
+  extensions? : Map[String, Json] = Map([]),
 ) -> Json {
   let doc = parse(query) catch {
     GqlSyntaxError(m, line, col) =>
-      return build_response(None, [
-        { message: m, path: [], locations: [(line, col)], extensions: Map([]), },
-      ])
+      return build_response(
+        None,
+        [GqlError::at(m, { line, col, })],
+        extensions~,
+      )
   }
   let verrors = validate(schema, doc)
   if verrors.length() > 0 {
-    return build_response(None, verrors)
+    return build_response(None, verrors, extensions~)
   }
   let prepared = match select_operation(schema, doc, operation_name) {
     Ok(p) => p
-    Err(e) => return build_response(None, [e])
+    Err(e) => return build_response(None, [e], extensions~)
   }
   let fragments = collect_fragments(doc)
   let var_errors : Array[GqlError] = []
@@ -1012,20 +1059,22 @@ pub fn execute(
     errors=var_errors,
   )
   if var_errors.length() > 0 {
-    return build_response(None, var_errors)
+    return build_response(None, var_errors, extensions~)
   }
   let exec = Exec::state(schema, resolvers, fragments, vars, context)
   let root_type = match schema.type_by_name(prepared.root_type) {
     Some(t) => t
     None =>
-      return build_response(None, [
-        GqlError::msg("Root type '" + prepared.root_type + "' is not defined"),
-      ])
+      return build_response(
+        None,
+        [GqlError::msg("Root type '" + prepared.root_type + "' is not defined")],
+        extensions~,
+      )
   }
   let data = exec.run_root(
     root_type,
     prepared.operation.selection_set,
     root_value,
   )
-  build_response(Some(data), exec.errors)
+  build_response(Some(data), exec.errors, extensions~)
 }

@@ -28,6 +28,12 @@ fn request_body(query : String, variables : Json) -> Bytes {
 }
 
 ///|
+/// The `content-type` every GraphQL POST must carry.
+fn json_headers() -> Array[(String, String)] {
+  [("content-type", "application/json")]
+}
+
+///|
 /// The "can actually run" milestone: drive the moonasgi handler with a real
 /// GraphQL POST through moonasgi's `TestClient` (the synchronous seam, no socket)
 /// and assert the exact `{ data }` body a client would read.
@@ -40,7 +46,7 @@ test "graphql endpoint answers a real POST with the exact data" {
     ),
     Json::null(),
   )
-  let resp = client.post("/graphql", body~)
+  let resp = client.post("/graphql", body~, headers=json_headers())
   assert_eq(resp.status, 200)
   assert_eq(resp.header("content-type"), Some("application/json"))
   assert_eq(
@@ -63,7 +69,7 @@ test "graphql endpoint binds request variables" {
     ),
     vars,
   )
-  let resp = client.post("/graphql", body~)
+  let resp = client.post("/graphql", body~, headers=json_headers())
   assert_eq(
     resp.text(),
     (
@@ -114,7 +120,11 @@ test "graphql endpoint 404s an unknown path" {
 test "graphql endpoint rejects a non-JSON body" {
   let (s, r) = server_schema()
   let client = @moonasgi.TestClient::new(graphql_handler(s, r))
-  let resp = client.post("/graphql", body=@utf8.encode("not json {"))
+  let resp = client.post(
+    "/graphql",
+    body=@utf8.encode("not json {"),
+    headers=json_headers(),
+  )
   assert_eq(resp.status, 400)
   assert_eq(
     resp.text(),

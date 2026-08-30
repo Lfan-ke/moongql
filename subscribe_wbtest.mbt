@@ -176,7 +176,7 @@ test "subscription source error yields one error payload" {
   assert_eq(
     payloads[0].stringify(),
     (
-      #|{"errors":[{"message":"stream unavailable"}]}
+      #|{"errors":[{"message":"stream unavailable","locations":[{"line":1,"column":16}]}]}
     ),
   )
 }

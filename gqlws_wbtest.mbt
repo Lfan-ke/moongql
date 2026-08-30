@@ -5,6 +5,22 @@ fn ctrl_frame(type_ : String) -> @moonasgi.WsMessage {
 }
 
 ///|
+/// A `connection_init` frame carrying connection parameters.
+fn init_frame(payload : Json) -> @moonasgi.WsMessage {
+  @moonasgi.Text(
+    jobj([("type", "connection_init".to_json()), ("payload", payload)]).stringify(),
+  )
+}
+
+///|
+/// A client `complete` frame `{ id, type }` as a text message.
+fn complete_frame(id : String) -> @moonasgi.WsMessage {
+  @moonasgi.Text(
+    jobj([("id", id.to_json()), ("type", "complete".to_json())]).stringify(),
+  )
+}
+
+///|
 /// A `subscribe` frame `{ id, type, payload: { query } }` as a text message.
 fn subscribe_frame(id : String, query : String) -> @moonasgi.WsMessage {
   let payload = jobj([("query", query.to_json())])
@@ -79,13 +95,184 @@ test "graphql-transport-ws refuses a second connection_init (4429)" {
 }
 
 ///|
-test "graphql-transport-ws refuses a reused operation id (4409)" {
-  let h = graphql_ws_handler(sub_schema(), Resolvers::new(), sub_subscribers())
-  (h.on_receive)(ctrl_frame("connection_init")) |> ignore
-  (h.on_receive)(subscribe_frame("1", "subscription { ticks }")) |> ignore
+/// An id belongs to a running operation, not to the connection: once the
+/// operation has completed the client may open a new one under the same id.
+test "graphql-transport-ws accepts an operation id reused after complete" {
+  let ws = GqlWs::new(sub_schema(), Resolvers::new(), sub_subscribers())
+  ws.recv(ctrl_frame("connection_init")) |> ignore
+  let first = sent_texts(
+    ws.recv(subscribe_frame("1", "subscription { ticks }")),
+  )
+  assert_eq(first[first.length() - 1], "{\"id\":\"1\",\"type\":\"complete\"}")
+  let again = ws.recv(subscribe_frame("1", "subscription { ticks }"))
+  assert_eq(close_code(again), -1)
+  assert_eq(sent_texts(again).length(), 3)
+}
+
+///|
+/// An id claimed by an operation that is still running is refused with 4409. The
+/// claim is what a server streaming a live source holds while its task runs.
+test "graphql-transport-ws refuses an operation id reused while running (4409)" {
+  let ws = GqlWs::new(sub_schema(), Resolvers::new(), sub_subscribers())
+  ws.recv(ctrl_frame("connection_init")) |> ignore
+  assert_eq(ws.claim("1"), true)
   assert_eq(
-    close_code((h.on_receive)(subscribe_frame("1", "subscription { ticks }"))),
+    close_code(ws.recv(subscribe_frame("1", "subscription { ticks }"))),
     4409,
+  )
+  ws.release("1")
+  assert_eq(
+    close_code(ws.recv(subscribe_frame("1", "subscription { ticks }"))),
+    -1,
+  )
+}
+
+///|
+/// A client's `complete` ends the operation, so its id is free again.
+test "graphql-transport-ws frees an operation id on a client complete" {
+  let ws = GqlWs::new(sub_schema(), Resolvers::new(), sub_subscribers())
+  ws.recv(ctrl_frame("connection_init")) |> ignore
+  assert_eq(ws.claim("1"), true)
+  assert_eq(ws.recv(complete_frame("1")).length(), 0)
+  assert_eq(
+    close_code(ws.recv(subscribe_frame("1", "subscription { ticks }"))),
+    -1,
+  )
+}
+
+///|
+/// A client that connects and never sends `connection_init` is closed with 4408
+/// once the timeout passes. The clock is the server's: nothing happens until it
+/// ticks.
+test "graphql-transport-ws times out a missing connection_init (4408)" {
+  let ws = GqlWs::new(
+    sub_schema(),
+    Resolvers::new(),
+    sub_subscribers(),
+    init_timeout=3000,
+  )
+  assert_eq(close_code(ws.tick(1000L)), -1)
+  assert_eq(close_code(ws.tick(3999L)), -1)
+  assert_eq(close_code(ws.tick(4000L)), 4408)
+}
+
+///|
+/// The countdown stops once `connection_init` arrives.
+test "graphql-transport-ws does not time out an initialised connection" {
+  let ws = GqlWs::new(
+    sub_schema(),
+    Resolvers::new(),
+    sub_subscribers(),
+    init_timeout=3000,
+  )
+  ws.tick(0L) |> ignore
+  ws.recv(ctrl_frame("connection_init")) |> ignore
+  assert_eq(close_code(ws.tick(9000L)), -1)
+}
+
+///|
+/// The server sends its own keep-alive `ping` once an interval has gone by.
+test "graphql-transport-ws pings on the configured interval" {
+  let ws = GqlWs::new(
+    sub_schema(),
+    Resolvers::new(),
+    sub_subscribers(),
+    ping_interval=12000,
+  )
+  ws.tick(0L) |> ignore
+  ws.recv(ctrl_frame("connection_init")) |> ignore
+  assert_eq(sent_texts(ws.tick(11999L)).length(), 0)
+  let first = sent_texts(ws.tick(12000L))
+  assert_eq(first.length(), 1)
+  assert_eq(first[0], "{\"type\":\"ping\"}")
+  assert_eq(sent_texts(ws.tick(12001L)).length(), 0)
+  let second = sent_texts(ws.tick(24000L))
+  assert_eq(second.length(), 1)
+  assert_eq(second[0], "{\"type\":\"ping\"}")
+}
+
+///|
+/// The `connection_init` payload is the connection's parameters, and reaches
+/// every operation's context under `connectionParams` — which is how a client
+/// hands the server a token once instead of on every operation.
+test "graphql-transport-ws passes connection_init params to the context" {
+  let r = Resolvers::new()
+  r.field("Query", "ok", info => {
+    match info.ctx {
+      Object(m) =>
+        match m.get("connectionParams") {
+          Some(Object(p)) =>
+            match p.get("token") {
+              Some(t) => t
+              None => "no token".to_json()
+            }
+          _ => "no params".to_json()
+        }
+      _ => "no context".to_json()
+    }
+  })
+  let ws = GqlWs::new(sub_schema(), r, sub_subscribers())
+  ws.recv(init_frame(jobj([("token", "heke1228".to_json())]))) |> ignore
+  assert_eq(
+    sent_texts(ws.recv(subscribe_frame("q1", "{ ok }")))[0],
+    "{\"id\":\"q1\",\"type\":\"next\",\"payload\":{\"data\":{\"ok\":\"heke1228\"}}}",
+  )
+}
+
+///|
+/// The parameters are merged into a configured context rather than replacing it,
+/// so what the server set up and what the client sent are both there.
+test "graphql-transport-ws merges init params into a context object" {
+  let r = Resolvers::new()
+  r.field("Query", "ok", info => info.ctx)
+  let ws = GqlWs::new(
+    sub_schema(),
+    r,
+    sub_subscribers(),
+    context=jobj([("tenant", "qwq".to_json())]),
+  )
+  ws.recv(init_frame(jobj([("token", "heke1228".to_json())]))) |> ignore
+  assert_eq(
+    sent_texts(ws.recv(subscribe_frame("q1", "{ ok }")))[0],
+    "{\"id\":\"q1\",\"type\":\"next\",\"payload\":{\"data\":{\"ok\":{\"tenant\":\"qwq\",\"connectionParams\":{\"token\":\"heke1228\"}}}}}",
+  )
+}
+
+///|
+/// A context that is not an object has nothing to merge into, so the parameters
+/// leave it alone.
+test "graphql-transport-ws leaves a non-object context alone" {
+  let r = Resolvers::new()
+  r.field("Query", "ok", info => info.ctx)
+  let ws = GqlWs::new(
+    sub_schema(),
+    r,
+    sub_subscribers(),
+    context="plain".to_json(),
+  )
+  ws.recv(init_frame(jobj([("token", "heke1228".to_json())]))) |> ignore
+  assert_eq(
+    sent_texts(ws.recv(subscribe_frame("q1", "{ ok }")))[0],
+    "{\"id\":\"q1\",\"type\":\"next\",\"payload\":{\"data\":{\"ok\":\"plain\"}}}",
+  )
+}
+
+///|
+/// With no `connection_init` payload the configured context is passed through
+/// untouched.
+test "graphql-transport-ws leaves the context alone without init params" {
+  let r = Resolvers::new()
+  r.field("Query", "ok", info => info.ctx)
+  let ws = GqlWs::new(
+    sub_schema(),
+    r,
+    sub_subscribers(),
+    context="plain".to_json(),
+  )
+  ws.recv(ctrl_frame("connection_init")) |> ignore
+  assert_eq(
+    sent_texts(ws.recv(subscribe_frame("q1", "{ ok }")))[0],
+    "{\"id\":\"q1\",\"type\":\"next\",\"payload\":{\"data\":{\"ok\":\"plain\"}}}",
   )
 }
 
@@ -154,4 +341,21 @@ test "graphql-transport-ws negotiates the subprotocol on connect" {
     _ => Some("unexpected")
   }
   assert_eq(none_chosen, None)
+}
+
+///|
+/// The keep-alive clock is armed by the first tick, whatever the monotonic clock
+/// reads there. A server whose clock does not start at zero — every real one —
+/// must not be pinged on the first tick after it initialises.
+test "graphql-transport-ws arms the ping clock from the first tick" {
+  let ws = GqlWs::new(
+    sub_schema(),
+    Resolvers::new(),
+    sub_subscribers(),
+    ping_interval=12000,
+  )
+  ws.tick(1000000L) |> ignore
+  ws.recv(ctrl_frame("connection_init")) |> ignore
+  assert_eq(sent_texts(ws.tick(1005000L)).length(), 0)
+  assert_eq(sent_texts(ws.tick(1012000L)).length(), 1)
 }

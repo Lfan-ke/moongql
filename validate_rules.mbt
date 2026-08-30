@@ -12,7 +12,7 @@
 /// operation in the document.
 fn Validator::check_operation_names(self : Validator, doc : Document) -> Unit {
   let names : Array[String] = []
-  let mut anon = 0
+  let anon : Array[Pos] = []
   let mut total = 0
   for def in doc.definitions {
     match def {
@@ -21,19 +21,23 @@ fn Validator::check_operation_names(self : Validator, doc : Document) -> Unit {
         match op.name {
           Some(n) => {
             if str_in(names, n) {
-              self.err("There can be only one operation named '" + n + "'")
+              self.err_at(
+                "There can be only one operation named '" + n + "'",
+                op.pos,
+              )
             }
             names.push(n)
           }
-          None => anon = anon + 1
+          None => anon.push(op.pos)
         }
       }
       FragmentDef(_) => ()
     }
   }
-  if anon > 0 && total > 1 {
-    self.err(
+  if anon.length() > 0 && total > 1 {
+    self.err_at(
       "This anonymous operation must be the only defined operation in the document",
+      anon[0],
     )
   }
 }
@@ -50,7 +54,10 @@ fn Validator::check_fragment_uniqueness(
     match def {
       FragmentDef(fr) => {
         if str_in(names, fr.name) {
-          self.err("There can be only one fragment named '" + fr.name + "'")
+          self.err_at(
+            "There can be only one fragment named '" + fr.name + "'",
+            fr.pos,
+          )
         }
         names.push(fr.name)
       }
@@ -71,7 +78,7 @@ fn Validator::collect_spreads(
   for sel in selections {
     match sel {
       FieldSel(f) => self.collect_spreads(f.selection_set, out)
-      FragmentSpreadSel(name, _) =>
+      FragmentSpreadSel(name, _, _) =>
         if not(str_in(out, name)) {
           out.push(name)
           match self.fragments.get(name) {
@@ -79,7 +86,7 @@ fn Validator::collect_spreads(
             None => ()
           }
         }
-      InlineFragmentSel(_, _, sels) => self.collect_spreads(sels, out)
+      InlineFragmentSel(_, _, sels, _) => self.collect_spreads(sels, out)
     }
   }
 }
@@ -99,7 +106,7 @@ fn Validator::check_fragments_used(self : Validator, doc : Document) -> Unit {
     match def {
       FragmentDef(fr) =>
         if not(str_in(reachable, fr.name)) {
-          self.err("Fragment '" + fr.name + "' is never used")
+          self.err_at("Fragment '" + fr.name + "' is never used", fr.pos)
         }
       OperationDef(_) => ()
     }
@@ -117,8 +124,11 @@ fn Validator::direct_spreads(
   for sel in selections {
     match sel {
       FieldSel(f) => self.direct_spreads(f.selection_set, out)
-      FragmentSpreadSel(name, _) => if not(str_in(out, name)) { out.push(name) }
-      InlineFragmentSel(_, _, sels) => self.direct_spreads(sels, out)
+      FragmentSpreadSel(name, _, _) =>
+        if not(str_in(out, name)) {
+          out.push(name)
+        }
+      InlineFragmentSel(_, _, sels, _) => self.direct_spreads(sels, out)
     }
   }
 }
@@ -163,7 +173,10 @@ fn Validator::check_fragment_cycles(self : Validator, doc : Document) -> Unit {
     match def {
       FragmentDef(fr) =>
         if self.fragment_reaches(fr.name, fr.name, []) {
-          self.err("Fragment '" + fr.name + "' spreads itself (cycle)")
+          self.err_at(
+            "Fragment '" + fr.name + "' spreads itself (cycle)",
+            fr.pos,
+          )
           self.cyclic.push(fr.name)
         }
       OperationDef(_) => ()
@@ -207,14 +220,14 @@ fn Validator::keyed_fields(
   for sel in selections {
     match sel {
       FieldSel(f) => out.push({ parent: type_name, origin, field: f, })
-      InlineFragmentSel(cond, _, sels) => {
+      InlineFragmentSel(cond, _, sels, _) => {
         let inner = match cond {
           Some(c) => c
           None => type_name
         }
         self.keyed_fields(inner, sels, origin, seen, out)
       }
-      FragmentSpreadSel(name, _) =>
+      FragmentSpreadSel(name, _, _) =>
         if not(str_in(seen, name)) && not(str_in(self.cyclic, name)) {
           seen.push(name)
           match self.fragments.get(name) {
@@ -408,12 +421,13 @@ fn Validator::check_can_merge(
       }
       match self.merge_conflict(a, b, self.exclusive(a.parent, b.parent)) {
         Some(why) =>
-          self.err(
+          self.err_at(
             "Fields '" +
             key +
             "' conflict because " +
             why +
             ". Use different aliases on the fields to fetch both if this was intentional.",
+            a.field.pos,
           )
         None => ()
       }
@@ -423,17 +437,25 @@ fn Validator::check_can_merge(
 
 ///|
 /// Collect the variable names referenced inside a value, descending into list and
-/// object values.
-fn collect_value_variables(v : Value, out : Array[String]) -> Unit {
+/// object values. Each name is kept with `pos`, the argument it was written in, so
+/// an undefined variable can be reported where a reader will find it.
+fn collect_value_variables(
+  v : Value,
+  pos : Pos,
+  out : Array[(String, Pos)],
+) -> Unit {
   match v {
-    Variable(n) => if not(str_in(out, n)) { out.push(n) }
+    Variable(n) =>
+      if out.search_by(u => u.0 == n) is None {
+        out.push((n, pos))
+      }
     ListValue(items) =>
       for it in items {
-        collect_value_variables(it, out)
+        collect_value_variables(it, pos, out)
       }
     ObjectValue(fields) =>
       for kv in fields {
-        collect_value_variables(kv.1, out)
+        collect_value_variables(kv.1, pos, out)
       }
     _ => ()
   }
@@ -447,25 +469,25 @@ fn Validator::collect_used_variables(
   self : Validator,
   selections : Array[Selection],
   visited : Map[String, Bool],
-  out : Array[String],
+  out : Array[(String, Pos)],
 ) -> Unit {
   for sel in selections {
     match sel {
       FieldSel(f) => {
         for a in f.arguments {
-          collect_value_variables(a.value, out)
+          collect_value_variables(a.value, a.pos, out)
         }
         for d in f.directives {
           for a in d.arguments {
-            collect_value_variables(a.value, out)
+            collect_value_variables(a.value, a.pos, out)
           }
         }
         self.collect_used_variables(f.selection_set, visited, out)
       }
-      FragmentSpreadSel(name, dirs) => {
+      FragmentSpreadSel(name, dirs, _) => {
         for d in dirs {
           for a in d.arguments {
-            collect_value_variables(a.value, out)
+            collect_value_variables(a.value, a.pos, out)
           }
         }
         if not(visited.get(name) is Some(true)) {
@@ -477,10 +499,10 @@ fn Validator::collect_used_variables(
           }
         }
       }
-      InlineFragmentSel(_, dirs, sels) => {
+      InlineFragmentSel(_, dirs, sels, _) => {
         for d in dirs {
           for a in d.arguments {
-            collect_value_variables(a.value, out)
+            collect_value_variables(a.value, a.pos, out)
           }
         }
         self.collect_used_variables(sels, visited, out)

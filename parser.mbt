@@ -81,6 +81,13 @@ fn Parser::current_desc(self : Parser) -> String {
 }
 
 ///|
+/// The current token's position, taken before the token is consumed so a node
+/// records where it starts.
+fn Parser::pos(self : Parser) -> Pos {
+  { line: self.current.line, col: self.current.col, }
+}
+
+///|
 /// Raise a syntax error at the current token's position (expression position:
 /// the polymorphic return lets it stand in for any value).
 fn[T] Parser::fail(self : Parser, msg : String) -> T raise GqlSyntaxError {
@@ -167,6 +174,7 @@ fn Parser::parse_definition(self : Parser) -> Definition raise GqlSyntaxError {
 fn Parser::parse_operation(
   self : Parser,
 ) -> OperationDefinition raise GqlSyntaxError {
+  let pos = self.pos()
   if self.at(BraceL) {
     let selection_set = self.parse_selection_set()
     return {
@@ -175,6 +183,7 @@ fn Parser::parse_operation(
       variable_definitions: [],
       directives: [],
       selection_set,
+      pos,
     }
   }
   let operation = match self.current.value {
@@ -187,7 +196,7 @@ fn Parser::parse_operation(
   let variable_definitions = self.parse_variable_definitions()
   let directives = self.parse_directives()
   let selection_set = self.parse_selection_set()
-  { operation, name, variable_definitions, directives, selection_set, }
+  { operation, name, variable_definitions, directives, selection_set, pos, }
 }
 
 ///|
@@ -201,6 +210,7 @@ fn Parser::parse_variable_definitions(
   }
   self.advance() |> ignore
   while not(self.at(ParenR)) && not(self.at(Eof)) {
+    let pos = self.pos()
     self.expect(Dollar) |> ignore
     let variable = self.expect_name()
     self.expect(Colon) |> ignore
@@ -212,7 +222,7 @@ fn Parser::parse_variable_definitions(
       None
     }
     let directives = self.parse_directives()
-    defs.push({ variable, typ, default_value, directives, })
+    defs.push({ variable, typ, default_value, directives, pos, })
   }
   self.expect(ParenR) |> ignore
   defs
@@ -243,10 +253,11 @@ fn Parser::parse_directives(
 ) -> Array[Directive] raise GqlSyntaxError {
   let ds = []
   while self.at(At) {
+    let pos = self.pos()
     self.advance() |> ignore
     let name = self.expect_name()
     let arguments = self.parse_arguments(false)
-    ds.push({ name, arguments, })
+    ds.push({ name, arguments, pos, })
   }
   ds
 }
@@ -265,10 +276,11 @@ fn Parser::parse_arguments(
   }
   self.advance() |> ignore
   while not(self.at(ParenR)) && not(self.at(Eof)) {
+    let pos = self.pos()
     let name = self.expect_name()
     self.expect(Colon) |> ignore
     let value = self.parse_value(const_)
-    args.push({ name, value, })
+    args.push({ name, value, pos, })
   }
   self.expect(ParenR) |> ignore
   args
@@ -296,22 +308,23 @@ fn Parser::parse_selection_set(
 /// `... on Type { ... }` / `... { ... }` inline fragment.
 fn Parser::parse_selection(self : Parser) -> Selection raise GqlSyntaxError {
   if self.at(Spread) {
+    let pos = self.pos()
     self.advance() |> ignore
     if self.at_keyword("on") {
       self.advance() |> ignore
       let cond = self.expect_name()
       let directives = self.parse_directives()
       let sels = self.parse_selection_set()
-      return InlineFragmentSel(Some(cond), directives, sels)
+      return InlineFragmentSel(Some(cond), directives, sels, pos)
     }
     if self.at(Name) {
       let name = self.advance().value
       let directives = self.parse_directives()
-      return FragmentSpreadSel(name, directives)
+      return FragmentSpreadSel(name, directives, pos)
     }
     let directives = self.parse_directives()
     let sels = self.parse_selection_set()
-    return InlineFragmentSel(None, directives, sels)
+    return InlineFragmentSel(None, directives, sels, pos)
   }
   FieldSel(self.parse_field())
 }
@@ -320,6 +333,7 @@ fn Parser::parse_selection(self : Parser) -> Selection raise GqlSyntaxError {
 /// Parse a field: `alias: name(args) @dir { ... }` (alias and the trailing
 /// selection set are optional).
 fn Parser::parse_field(self : Parser) -> QueryField raise GqlSyntaxError {
+  let pos = self.pos()
   let first = self.expect_name()
   let mut field_alias : String? = None
   let mut name = first
@@ -335,7 +349,7 @@ fn Parser::parse_field(self : Parser) -> QueryField raise GqlSyntaxError {
   } else {
     []
   }
-  { alias_: field_alias, name, arguments, directives, selection_set, }
+  { alias_: field_alias, name, arguments, directives, selection_set, pos, }
 }
 
 ///|
@@ -344,6 +358,7 @@ fn Parser::parse_field(self : Parser) -> QueryField raise GqlSyntaxError {
 fn Parser::parse_fragment(
   self : Parser,
 ) -> FragmentDefinition raise GqlSyntaxError {
+  let pos = self.pos()
   self.expect_keyword("fragment")
   if self.at_keyword("on") {
     self.err("fragment name must not be 'on'")
@@ -353,7 +368,7 @@ fn Parser::parse_fragment(
   let type_condition = self.expect_name()
   let directives = self.parse_directives()
   let selection_set = self.parse_selection_set()
-  { name, type_condition, directives, selection_set, }
+  { name, type_condition, directives, selection_set, pos, }
 }
 
 ///|

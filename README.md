@@ -91,6 +91,22 @@ let res = @moongql.execute(s, r,
 // res.stringify() == {"data":{"hero":{"id":"1","name":"Alice"}}}
 ```
 
+Every error that can be traced to a point in the document carries its `locations` — the line and column of the field, argument, directive or variable it is about, not just a message:
+
+```moonbit
+let res = @moongql.execute(s, r, "query Hero {\n  user(id: \"1\") {\n    nope\n  }\n}")
+// {"errors":[{"message":"Cannot query field 'nope' on type 'User'",
+//             "locations":[{"line":3,"column":5}]}]}
+```
+
+A server's own `extensions` entry (spec §7.1) rides on the response — a trace id, a timing, whatever the deployment wants to say alongside the result — and is left out when empty:
+
+```moonbit
+let res = @moongql.execute(s, r, "{ user(id: \"1\") { name } }",
+  extensions={ "traceId": "qwq-233" })
+// {"data":{...},"extensions":{"traceId":"qwq-233"}}
+```
+
 ### Design: faithful equivalences to strawberry
 
 MoonBit has no runtime reflection, so where strawberry discovers resolvers and schema from Python classes, `moongql` uses **explicit** values: resolvers are functions registered by `"Type.field"` (like Rust/Go GraphQL servers), and a field's declared return type drives leaf-vs-composite completion exactly as `graphql-core`'s `complete_value` does. Fields with no registered resolver read their value off the parent JSON object — the equivalent of `graphql-core`'s `default_field_resolver`.
@@ -177,12 +193,16 @@ loader.get(1)                                   // Some("author#1")
 
 ## HTTP endpoint
 
-`graphql_handler` wires a schema and its resolvers onto the [moonasgi](https://mooncakes.io/docs/Lfan-ke/moonasgi) seam, so moongql serves over `mooncat` (or any server that binds the ASGI callable). A `GET` returns the GraphiQL IDE; a `POST` reads a `{ query, variables, operationName }` body, runs it, and replies with the `{ data, errors }` JSON:
+`graphql_handler` wires a schema and its resolvers onto the [moonasgi](https://mooncakes.io/docs/Lfan-ke/moonasgi) seam, so moongql serves over `mooncat` (or any server that binds the ASGI callable), following the [GraphQL-over-HTTP](https://graphql.github.io/graphql-over-http/draft/) specification:
 
 ```moonbit
 let handler = @moongql.graphql_handler(schema, resolvers)      // path defaults to /graphql
 let app = @moongql.graphql_app(schema, resolvers)              // the same, lifted onto an AsgiApp
 ```
+
+A `POST` reads an `application/json` body — `{ query, variables, operationName }`, or an array of those for a batch, answered by an array of results. A POST with no `Content-Type` is a 415: the server will not guess what the bytes are. A `GET` carrying `?query=` runs it (a query only — a mutation over `GET` is a 405, since a `GET` must stay safe), taking `variables` as a JSON-encoded parameter; a `GET` without one serves the GraphiQL IDE.
+
+`Accept` picks the response media type. Ask for `application/graphql-response+json` and the status carries meaning — 400 for a request error, where the document never ran, and 200 for an operation that ran whatever its field errors say. Ask for `application/json`, or send no `Accept` at all, and every GraphQL response is a 200 with the errors in the body, which is what pre-specification clients expect. A client that accepts neither gets a 406.
 
 `graphql_app` is what a server mounts. The request/response logic is shared with `graphql_handler`, which moonasgi's `TestClient` drives without a socket — so the endpoint is tested on every backend:
 
@@ -191,9 +211,26 @@ let client = @moonasgi.TestClient::new(@moongql.graphql_handler(schema, resolver
 let body = @utf8.encode(
   "{\"query\":\"{ user(id: \\\"1\\\") { name } }\"}",
 )
-let resp = client.post("/graphql", body~)
+let resp = client.post("/graphql", body~, headers=[
+  ("content-type", "application/json"),
+  ("accept", "application/graphql-response+json"),
+])
 // resp.status == 200, resp.text() == {"data":{"user":{"name":"Alice"}}}
 ```
+
+## graphql-transport-ws
+
+`GqlWs` is one WebSocket connection's protocol state, and `recv` maps a client frame to the frames sent back: `connection_init` → `connection_ack`, `subscribe` → a run of `next` then `complete`, `ping` → `pong`. The `connection_init` payload becomes the connection's parameters and reaches every resolver's context under `connectionParams`, so a client hands over a token once instead of on every operation. An operation id is unique among *running* operations — reusing one that has completed is fine, reusing one still running closes with 4409.
+
+The protocol's two timers are state, not threads. This package has no runtime and no clock, so a server drives them by calling `tick` with a millisecond reading of a monotonic clock and sending whatever comes back: the 4408 close when `connection_init` never arrived, or a keep-alive `ping`.
+
+```moonbit
+let ws = @moongql.GqlWs::new(schema, resolvers, subs, init_timeout=3000, ping_interval=12000)
+let handler = ws.handler()            // a moonasgi WebSocketHandler
+ws.tick(now_ms)                       // the server's clock, as often as it likes
+```
+
+`graphql_ws_handler` builds a handler whose connection state nothing can reach, for a server with no clock to spare.
 
 ## Apollo Federation
 

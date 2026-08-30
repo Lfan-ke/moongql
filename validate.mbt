@@ -58,7 +58,15 @@ fn str_in(hay : Array[String], needle : String) -> Bool {
 }
 
 ///|
-/// Record a message-only validation error.
+/// Record a validation error about the node at `pos`, which the response reports
+/// as the error's `locations` (§7.1.2).
+fn Validator::err_at(self : Validator, message : String, pos : Pos) -> Unit {
+  self.errors.push(GqlError::at(message, pos))
+}
+
+///|
+/// Record a validation error about the document as a whole rather than any one
+/// node in it — the only case §7.1.2 leaves without `locations`.
 fn Validator::err(self : Validator, message : String) -> Unit {
   self.errors.push(GqlError::msg(message))
 }
@@ -85,6 +93,7 @@ fn Validator::check_value_vars(
   self : Validator,
   v : Value,
   defined : Array[VariableDefinition]?,
+  pos : Pos,
 ) -> Unit {
   match defined {
     None => return
@@ -92,15 +101,15 @@ fn Validator::check_value_vars(
       match v {
         Variable(n) =>
           if var_def(vds, n) is None {
-            self.err("Variable '$" + n + "' is not defined")
+            self.err_at("Variable '$" + n + "' is not defined", pos)
           }
         ListValue(items) =>
           for it in items {
-            self.check_value_vars(it, defined)
+            self.check_value_vars(it, defined, pos)
           }
         ObjectValue(fields) =>
           for kv in fields {
-            self.check_value_vars(kv.1, defined)
+            self.check_value_vars(kv.1, defined, pos)
           }
         _ => ()
       }
@@ -129,7 +138,10 @@ fn Validator::check_arg_uniqueness(
   let seen : Array[String] = []
   for a in args {
     if str_in(seen, a.name) {
-      self.err("Duplicate argument '" + a.name + "' on '" + owner + "'")
+      self.err_at(
+        "Duplicate argument '" + a.name + "' on '" + owner + "'",
+        a.pos,
+      )
     }
     seen.push(a.name)
   }
@@ -151,20 +163,24 @@ fn Validator::check_directives(
     self.check_arg_uniqueness(d.arguments, "@" + d.name)
     match self.directive_def(d.name) {
       None => {
-        self.err("Unknown directive '@" + d.name + "'")
+        self.err_at("Unknown directive '@" + d.name + "'", d.pos)
         for a in d.arguments {
-          self.check_value_vars(a.value, defined)
+          self.check_value_vars(a.value, defined, a.pos)
         }
       }
       Some(def) => {
         if not(str_in(def.locations, location)) {
-          self.err("Directive '@" + d.name + "' may not be used on " + location)
+          self.err_at(
+            "Directive '@" + d.name + "' may not be used on " + location,
+            d.pos,
+          )
         }
         if str_in(seen, d.name) && not(def.is_repeatable) {
-          self.err(
+          self.err_at(
             "Directive '@" +
             d.name +
             "' can only be used once at this location (it is not repeatable)",
+            d.pos,
           )
         }
         self.check_directive_args(d, def, defined)
@@ -188,7 +204,7 @@ fn Validator::check_directive_args(
 ) -> Unit {
   let owner = "directive '@" + d.name + "'"
   for a in d.arguments {
-    self.check_value_vars(a.value, defined)
+    self.check_value_vars(a.value, defined, a.pos)
     let mut declared = false
     for da in def.args {
       if da.0 == a.name {
@@ -197,12 +213,13 @@ fn Validator::check_directive_args(
           a.value,
           da.1,
           "argument '" + a.name + "' of " + owner,
+          a.pos,
         )
-        self.check_var_usage(a.value, da.1, false, defined)
+        self.check_var_usage(a.value, da.1, false, defined, a.pos)
       }
     }
     if not(declared) {
-      self.err("Unknown argument '" + a.name + "' on " + owner)
+      self.err_at("Unknown argument '" + a.name + "' on " + owner, a.pos)
     }
   }
   for da in def.args {
@@ -214,12 +231,13 @@ fn Validator::check_directive_args(
         }
       }
       if not(supplied) {
-        self.err(
+        self.err_at(
           "Directive '@" +
           d.name +
           "' is missing required argument '" +
           da.0 +
           "'",
+          d.pos,
         )
       }
     }
@@ -243,8 +261,9 @@ fn Validator::check_field_args(
   }
   for a in field.arguments {
     if not(str_in(declared, a.name)) {
-      self.err(
+      self.err_at(
         "Unknown argument '" + a.name + "' on field '" + field.name + "'",
+        a.pos,
       )
     } else {
       for da in fdef.args {
@@ -253,17 +272,19 @@ fn Validator::check_field_args(
             a.value,
             da.1,
             "argument '" + a.name + "' of field '" + field.name + "'",
+            a.pos,
           )
           self.check_var_usage(
             a.value,
             da.1,
             fdef.arg_defaults.get(a.name) is Some(_),
             defined,
+            a.pos,
           )
         }
       }
     }
-    self.check_value_vars(a.value, defined)
+    self.check_value_vars(a.value, defined, a.pos)
   }
   for da in fdef.args {
     if da.1 is NonNull(_) {
@@ -274,12 +295,13 @@ fn Validator::check_field_args(
         }
       }
       if not(supplied) {
-        self.err(
+        self.err_at(
           "Field '" +
           field.name +
           "' is missing required argument '" +
           da.0 +
           "'",
+          field.pos,
         )
       }
     }
@@ -354,6 +376,7 @@ fn Validator::check_var_usage(
   loc : GqlType,
   loc_default : Bool,
   defined : Array[VariableDefinition]?,
+  pos : Pos,
 ) -> Unit {
   let vds = match defined {
     Some(x) => x
@@ -378,7 +401,7 @@ fn Validator::check_var_usage(
             _ => types_compatible(vt, loc)
           }
           if not(ok) {
-            self.err(
+            self.err_at(
               "Variable '$" +
               vd.variable +
               "' of type '" +
@@ -386,6 +409,7 @@ fn Validator::check_var_usage(
               "' used in position expecting type '" +
               type_sdl(loc) +
               "'.",
+              pos,
             )
           }
         }
@@ -396,7 +420,7 @@ fn Validator::check_var_usage(
         _ => loc
       }
       for it in items {
-        self.check_var_usage(it, item, false, defined)
+        self.check_var_usage(it, item, false, defined, pos)
       }
     }
     ObjectValue(fields) =>
@@ -404,7 +428,8 @@ fn Validator::check_var_usage(
         Some(td) =>
           for kv in fields {
             match td.field_by_name(kv.0) {
-              Some(fd) => self.check_var_usage(kv.1, fd.typ, false, defined)
+              Some(fd) =>
+                self.check_var_usage(kv.1, fd.typ, false, defined, pos)
               None => ()
             }
           }
@@ -425,6 +450,7 @@ fn Validator::check_value_type(
   v : Value,
   t : GqlType,
   ctx : String,
+  pos : Pos,
 ) -> Unit {
   if v is Variable(_) {
     return
@@ -432,24 +458,25 @@ fn Validator::check_value_type(
   match t {
     NonNull(inner) =>
       if v is NullValue {
-        self.err(
+        self.err_at(
           ctx + " of non-null type '" + type_sdl(t) + "' must not be null.",
+          pos,
         )
       } else {
-        self.check_value_type(v, inner, ctx)
+        self.check_value_type(v, inner, ctx, pos)
       }
     ListOf(inner) =>
       match v {
         NullValue => ()
         ListValue(items) =>
           for it in items {
-            self.check_value_type(it, inner, ctx)
+            self.check_value_type(it, inner, ctx, pos)
           }
-        _ => self.check_value_type(v, inner, ctx)
+        _ => self.check_value_type(v, inner, ctx, pos)
       }
     Scalar(name) | Named(name) =>
       if not(v is NullValue) {
-        self.check_named_value(v, name, ctx)
+        self.check_named_value(v, name, ctx, pos)
       }
   }
 }
@@ -463,30 +490,47 @@ fn Validator::check_named_value(
   v : Value,
   name : String,
   ctx : String,
+  pos : Pos,
 ) -> Unit {
   match name {
     "Int" =>
       if not(v is IntValue(_)) {
-        self.err(ctx + " expected type 'Int', found " + value_desc(v) + ".")
+        self.err_at(
+          ctx + " expected type 'Int', found " + value_desc(v) + ".",
+          pos,
+        )
       }
     "Float" =>
       match v {
         IntValue(_) | FloatValue(_) => ()
         _ =>
-          self.err(ctx + " expected type 'Float', found " + value_desc(v) + ".")
+          self.err_at(
+            ctx + " expected type 'Float', found " + value_desc(v) + ".",
+            pos,
+          )
       }
     "String" =>
       if not(v is StringValue(_, _)) {
-        self.err(ctx + " expected type 'String', found " + value_desc(v) + ".")
+        self.err_at(
+          ctx + " expected type 'String', found " + value_desc(v) + ".",
+          pos,
+        )
       }
     "Boolean" =>
       if not(v is BooleanValue(_)) {
-        self.err(ctx + " expected type 'Boolean', found " + value_desc(v) + ".")
+        self.err_at(
+          ctx + " expected type 'Boolean', found " + value_desc(v) + ".",
+          pos,
+        )
       }
     "ID" =>
       match v {
         StringValue(_, _) | IntValue(_) => ()
-        _ => self.err(ctx + " expected type 'ID', found " + value_desc(v) + ".")
+        _ =>
+          self.err_at(
+            ctx + " expected type 'ID', found " + value_desc(v) + ".",
+            pos,
+          )
       }
     _ =>
       match self.schema.enum_by_name(name) {
@@ -494,30 +538,32 @@ fn Validator::check_named_value(
           match v {
             EnumValue(ev) =>
               if not(str_in(en.values, ev)) {
-                self.err(
+                self.err_at(
                   ctx +
                   ": value '" +
                   ev +
                   "' does not exist in enum '" +
                   name +
                   "'.",
+                  pos,
                 )
               }
             _ =>
-              self.err(
+              self.err_at(
                 ctx +
                 " expected enum '" +
                 name +
                 "', found " +
                 value_desc(v) +
                 ".",
+                pos,
               )
           }
         None =>
           match self.schema.type_by_name(name) {
             Some(td) =>
               if td.kind == Input {
-                self.check_input_value(v, td, ctx)
+                self.check_input_value(v, td, ctx, pos)
               }
             None => ()
           }
@@ -534,6 +580,7 @@ fn Validator::check_input_value(
   v : Value,
   td : ObjectType,
   ctx : String,
+  pos : Pos,
 ) -> Unit {
   match v {
     ObjectValue(fields) => {
@@ -541,12 +588,13 @@ fn Validator::check_input_value(
       for kv in fields {
         let (fname, fval) = kv
         if seen.contains(fname) {
-          self.err(
+          self.err_at(
             "There can be only one input field named '" +
             td.name +
             "." +
             fname +
             "'.",
+            pos,
           )
         }
         seen.push(fname)
@@ -556,14 +604,16 @@ fn Validator::check_input_value(
               fval,
               fdef.typ,
               "field '" + td.name + "." + fname + "'",
+              pos,
             )
           None =>
-            self.err(
+            self.err_at(
               "Field '" +
               fname +
               "' is not defined by input type '" +
               td.name +
               "'.",
+              pos,
             )
         }
       }
@@ -576,7 +626,7 @@ fn Validator::check_input_value(
             }
           }
           if not(present) {
-            self.err(
+            self.err_at(
               "Field '" +
               td.name +
               "." +
@@ -584,30 +634,35 @@ fn Validator::check_input_value(
               "' of required type '" +
               type_sdl(fdef.typ) +
               "' was not provided.",
+              pos,
             )
           }
         }
       }
     }
     _ =>
-      self.err(
+      self.err_at(
         ctx +
         " expected input object '" +
         td.name +
         "', found " +
         value_desc(v) +
         ".",
+        pos,
       )
   }
 }
 
 ///|
-/// Validate a selection set against the object type named `type_name`.
+/// Validate a selection set against the object type named `type_name`. `pos` is
+/// where that type was named — the operation, field or fragment the set hangs
+/// off — and is what an error about the set as a whole points at.
 fn Validator::check_selection_set(
   self : Validator,
   type_name : String,
   selections : Array[Selection],
   defined : Array[VariableDefinition]?,
+  pos : Pos,
 ) -> Unit {
   match self.schema.union_by_name(type_name) {
     Some(u) => {
@@ -620,7 +675,7 @@ fn Validator::check_selection_set(
   let obj = match self.lookup_type(type_name) {
     Some(o) => o
     None => {
-      self.err("Cannot select on unknown type '" + type_name + "'")
+      self.err_at("Cannot select on unknown type '" + type_name + "'", pos)
       return
     }
   }
@@ -630,7 +685,10 @@ fn Validator::check_selection_set(
         self.check_directives(f.directives, defined, "FIELD")
         if f.name == "__typename" {
           if f.selection_set.length() > 0 {
-            self.err("Field '__typename' must not have a selection set")
+            self.err_at(
+              "Field '__typename' must not have a selection set",
+              f.pos,
+            )
           }
           continue
         }
@@ -638,43 +696,47 @@ fn Validator::check_selection_set(
           (f.name == "__schema" || f.name == "__type") {
           let meta = if f.name == "__schema" { "__Schema" } else { "__Type" }
           for a in f.arguments {
-            self.check_value_vars(a.value, defined)
+            self.check_value_vars(a.value, defined, a.pos)
           }
           if f.selection_set.length() == 0 {
-            self.err(
+            self.err_at(
               "Field '" + f.name + "' must have a selection of subfields",
+              f.pos,
             )
           } else {
-            self.check_selection_set(meta, f.selection_set, defined)
+            self.check_selection_set(meta, f.selection_set, defined, f.pos)
           }
           continue
         }
         match obj.field_by_name(f.name) {
           None =>
-            self.err(
+            self.err_at(
               "Cannot query field '" + f.name + "' on type '" + type_name + "'",
+              f.pos,
             )
           Some(fdef) => {
             self.check_field_args(f, fdef, defined)
             let base = fdef.typ.named_base()
             if self.is_leaf(base) {
               if f.selection_set.length() > 0 {
-                self.err(
+                self.err_at(
                   "Field '" +
                   f.name +
                   "' of leaf type '" +
                   base +
                   "' must not have a selection set",
+                  f.pos,
                 )
               }
             } else if self.schema.union_by_name(base) is Some(u) {
               if f.selection_set.length() == 0 {
-                self.err(
+                self.err_at(
                   "Field '" +
                   f.name +
                   "' of union type '" +
                   base +
                   "' must have a selection of subfields",
+                  f.pos,
                 )
               } else {
                 self.check_union_selection_set(
@@ -686,28 +748,32 @@ fn Validator::check_selection_set(
               }
             } else if self.lookup_type(base) is Some(_) {
               if f.selection_set.length() == 0 {
-                self.err(
+                self.err_at(
                   "Field '" +
                   f.name +
                   "' of type '" +
                   base +
                   "' must have a selection of subfields",
+                  f.pos,
                 )
               } else {
-                self.check_selection_set(base, f.selection_set, defined)
+                self.check_selection_set(base, f.selection_set, defined, f.pos)
               }
             } else {
-              self.err("Field '" + f.name + "' has unknown type '" + base + "'")
+              self.err_at(
+                "Field '" + f.name + "' has unknown type '" + base + "'",
+                f.pos,
+              )
             }
           }
         }
       }
-      FragmentSpreadSel(name, dirs) => {
+      FragmentSpreadSel(name, dirs, spos) => {
         self.check_directives(dirs, defined, "FRAGMENT_SPREAD")
         match self.fragments.get(name) {
           Some(frag) =>
             if not(self.types_overlap(type_name, frag.type_condition)) {
-              self.err(
+              self.err_at(
                 "Fragment '" +
                 name +
                 "' cannot be spread here as objects of type '" +
@@ -715,12 +781,13 @@ fn Validator::check_selection_set(
                 "' can never be of type '" +
                 frag.type_condition +
                 "'",
+                spos,
               )
             }
-          None => self.err("Unknown fragment '" + name + "'")
+          None => self.err_at("Unknown fragment '" + name + "'", spos)
         }
       }
-      InlineFragmentSel(cond, dirs, sels) => {
+      InlineFragmentSel(cond, dirs, sels, fpos) => {
         self.check_directives(dirs, defined, "INLINE_FRAGMENT")
         let cond_type = match cond {
           Some(c) => c
@@ -728,17 +795,21 @@ fn Validator::check_selection_set(
         }
         if self.type_exists(cond_type) {
           if not(self.types_overlap(type_name, cond_type)) {
-            self.err(
+            self.err_at(
               "Fragment cannot be spread here as objects of type '" +
               type_name +
               "' can never be of type '" +
               cond_type +
               "'",
+              fpos,
             )
           }
-          self.check_selection_set(cond_type, sels, defined)
+          self.check_selection_set(cond_type, sels, defined, fpos)
         } else {
-          self.err("Inline fragment on unknown type '" + cond_type + "'")
+          self.err_at(
+            "Inline fragment on unknown type '" + cond_type + "'",
+            fpos,
+          )
         }
       }
     }
@@ -763,25 +834,29 @@ fn Validator::check_union_selection_set(
         self.check_directives(f.directives, defined, "FIELD")
         if f.name == "__typename" {
           if f.selection_set.length() > 0 {
-            self.err("Field '__typename' must not have a selection set")
+            self.err_at(
+              "Field '__typename' must not have a selection set",
+              f.pos,
+            )
           }
         } else {
-          self.err(
+          self.err_at(
             "Cannot query field '" +
             f.name +
             "' directly on union type '" +
             union_name +
             "'; select it inside an inline fragment on a member type",
+            f.pos,
           )
         }
       }
-      FragmentSpreadSel(name, dirs) => {
+      FragmentSpreadSel(name, dirs, spos) => {
         self.check_directives(dirs, defined, "FRAGMENT_SPREAD")
         if not(self.fragments.contains(name)) {
-          self.err("Unknown fragment '" + name + "'")
+          self.err_at("Unknown fragment '" + name + "'", spos)
         }
       }
-      InlineFragmentSel(cond, dirs, sels) => {
+      InlineFragmentSel(cond, dirs, sels, fpos) => {
         self.check_directives(dirs, defined, "INLINE_FRAGMENT")
         let cond_type = match cond {
           Some(c) => c
@@ -790,14 +865,15 @@ fn Validator::check_union_selection_set(
         if cond_type == union_name {
           self.check_union_selection_set(union_name, u, sels, defined)
         } else if str_in(u.members, cond_type) {
-          self.check_selection_set(cond_type, sels, defined)
+          self.check_selection_set(cond_type, sels, defined, fpos)
         } else {
-          self.err(
+          self.err_at(
             "Inline fragment type '" +
             cond_type +
             "' is not a member of union '" +
             union_name +
             "'",
+            fpos,
           )
         }
       }
@@ -882,7 +958,7 @@ fn Validator::check_operation(
   let root_type = match root {
     Some(r) => r
     None => {
-      self.err("Schema has no root type for this operation")
+      self.err_at("Schema has no root type for this operation", op.pos)
       return
     }
   }
@@ -896,7 +972,7 @@ fn Validator::check_operation(
   for vd in op.variable_definitions {
     // §5.8.1 Variable Uniqueness: a variable name is defined at most once.
     if var_def(defined, vd.variable) is Some(_) {
-      self.err("Duplicate variable '$" + vd.variable + "'")
+      self.err_at("Duplicate variable '$" + vd.variable + "'", vd.pos)
     }
     defined.push(vd)
     self.check_directives(vd.directives, Some(defined), "VARIABLE_DEFINITION")
@@ -911,16 +987,18 @@ fn Validator::check_operation(
       let exists = self.schema.type_by_name(base) is Some(_) ||
         self.schema.union_by_name(base) is Some(_)
       if exists {
-        self.err(
+        self.err_at(
           "Variable '$" +
           vd.variable +
           "' cannot be non-input type '" +
           base +
           "'",
+          vd.pos,
         )
       } else {
-        self.err(
+        self.err_at(
           "Variable '$" + vd.variable + "' has unknown type '" + base + "'",
+          vd.pos,
         )
       }
     }
@@ -931,6 +1009,7 @@ fn Validator::check_operation(
           dv,
           typeref_to_gql(vd.typ),
           "variable '$" + vd.variable + "'",
+          vd.pos,
         )
       None => ()
     }
@@ -938,31 +1017,32 @@ fn Validator::check_operation(
   if op.operation is Subscription {
     self.check_single_root_field(op)
   }
-  self.check_selection_set(root_type, op.selection_set, Some(defined))
+  self.check_selection_set(root_type, op.selection_set, Some(defined), op.pos)
   self.check_spread_var_usages(root_type, op.selection_set, defined, false, [])
   // §5.8.4 All Variables Used: every defined variable is referenced somewhere in
   // the operation (directly or through a spread fragment).
-  let used : Array[String] = []
+  let used : Array[(String, Pos)] = []
   self.collect_used_variables(op.selection_set, Map([]), used)
   for vd in op.variable_definitions {
-    if not(str_in(used, vd.variable)) {
-      self.err("Variable '$" + vd.variable + "' is never used")
+    if used.search_by(u => u.0 == vd.variable) is None {
+      self.err_at("Variable '$" + vd.variable + "' is never used", vd.pos)
     }
   }
   // §5.8.3 All Variable Uses Defined, over the same transitive set. Checking only
   // the operation's own selections misses the common case — a variable referenced
   // inside a fragment the operation spreads — which then executed as null.
-  for name in used {
-    if var_def(defined, name) is None {
-      self.err(
+  for u in used {
+    if var_def(defined, u.0) is None {
+      self.err_at(
         "Variable '$" +
-        name +
+        u.0 +
         "' is not defined by operation '" +
         (match op.name {
           Some(n) => n
           None => "(anonymous)"
         }) +
         "'",
+        u.1,
       )
     }
   }
@@ -1005,6 +1085,7 @@ fn Validator::check_spread_var_usages(
                       da.1,
                       fd.arg_defaults.get(a.name) is Some(_),
                       Some(vars),
+                      a.pos,
                     )
                   }
                 }
@@ -1020,7 +1101,7 @@ fn Validator::check_spread_var_usages(
           }
         }
       }
-      InlineFragmentSel(cond, dirs, sels) => {
+      InlineFragmentSel(cond, dirs, sels, _) => {
         if inside {
           self.check_directive_var_usages(dirs, vars)
         }
@@ -1030,7 +1111,7 @@ fn Validator::check_spread_var_usages(
         }
         self.check_spread_var_usages(inner, sels, vars, inside, seen)
       }
-      FragmentSpreadSel(name, dirs) => {
+      FragmentSpreadSel(name, dirs, _) => {
         if inside {
           self.check_directive_var_usages(dirs, vars)
         }
@@ -1068,7 +1149,7 @@ fn Validator::check_directive_var_usages(
         for a in d.arguments {
           for da in def.args {
             if da.0 == a.name {
-              self.check_var_usage(a.value, da.1, false, Some(vars))
+              self.check_var_usage(a.value, da.1, false, Some(vars), a.pos)
             }
           }
         }
@@ -1096,12 +1177,16 @@ fn Validator::check_single_root_field(
     }
   }
   if keys.length() != 1 {
-    self.err("Subscription operation must select exactly one root field")
+    self.err_at(
+      "Subscription operation must select exactly one root field",
+      op.pos,
+    )
   } else if is_meta_field(fields[0].name) {
-    self.err(
+    self.err_at(
       "Subscription root field '" +
       fields[0].name +
       "' must not be an introspection field",
+      fields[0].pos,
     )
   }
 }
@@ -1118,7 +1203,7 @@ fn Validator::collect_root_fields(
   for sel in selections {
     match sel {
       FieldSel(f) => out.push(f)
-      FragmentSpreadSel(name, _) =>
+      FragmentSpreadSel(name, _, _) =>
         if not(visited.get(name) is Some(true)) {
           visited[name] = true
           match self.fragments.get(name) {
@@ -1127,7 +1212,7 @@ fn Validator::collect_root_fields(
             None => ()
           }
         }
-      InlineFragmentSel(_, _, sels) =>
+      InlineFragmentSel(_, _, sels, _) =>
         self.collect_root_fields(sels, visited, out)
     }
   }
@@ -1143,14 +1228,20 @@ fn Validator::check_fragment(
 ) -> Unit {
   self.check_directives(frag.directives, None, "FRAGMENT_DEFINITION")
   if self.type_exists(frag.type_condition) {
-    self.check_selection_set(frag.type_condition, frag.selection_set, None)
+    self.check_selection_set(
+      frag.type_condition,
+      frag.selection_set,
+      None,
+      frag.pos,
+    )
   } else {
-    self.err(
+    self.err_at(
       "Fragment '" +
       frag.name +
       "' has unknown type condition '" +
       frag.type_condition +
       "'",
+      frag.pos,
     )
   }
 }

@@ -114,7 +114,7 @@ test "union rejects a direct field selection" {
   assert_eq(
     res.stringify(),
     (
-      #|{"errors":[{"message":"Cannot query field 'title' directly on union type 'SearchResult'; select it inside an inline fragment on a member type"}]}
+      #|{"errors":[{"message":"Cannot query field 'title' directly on union type 'SearchResult'; select it inside an inline fragment on a member type","locations":[{"line":1,"column":12}]}]}
     ),
   )
 }
