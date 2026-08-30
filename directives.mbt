@@ -248,12 +248,20 @@ fn applied_directives_sdl(ds : Array[AppliedDirective]) -> String {
 }
 
 ///|
-/// The valid locations of a built-in executable directive (`@skip` / `@include`),
-/// or `None` for a name that is not a built-in. Used by the validator to check
-/// that a directive appears where it is allowed.
-fn builtin_exec_directive(name : String) -> Array[String]? {
+/// The definition of a built-in executable directive (`@skip` / `@include`), or
+/// `None` for a name that is not a built-in. The validator reads its locations and
+/// its `if: Boolean!` argument; the executor evaluates the directive itself, so no
+/// `on_field` hook is attached.
+fn builtin_exec_directive(name : String) -> DirectiveDef? {
   match name {
-    "skip" | "include" => Some(["FIELD", "FRAGMENT_SPREAD", "INLINE_FRAGMENT"])
+    "skip" | "include" =>
+      Some({
+        name,
+        locations: ["FIELD", "FRAGMENT_SPREAD", "INLINE_FRAGMENT"],
+        args: [("if", NonNull(Scalar("Boolean")))],
+        is_repeatable: false,
+        on_field: None,
+      })
     _ => None
   }
 }

@@ -244,6 +244,141 @@ test "a fragment cannot condition on an input object" {
 }
 
 ///|
+/// §5.3.2: two fields under one response key must be the same field. `{ a: name
+/// a: email }` used to execute as `a: <name>` with `email`'s selections folded in,
+/// because the executor concatenates same-key sub-selections without comparing
+/// them. Two different keys are the way to ask for both.
+test "fields sharing a response key must be the same field" {
+  let s = rules_schema()
+  s.type_by_name("User").unwrap().field("email", NonNull(Scalar("String")))
+  assert_eq(
+    verr_text(s, "{ user(id: \"1\") { a: name a: email } }").contains(
+      "Fields 'a' conflict because 'name' and 'email' are different fields",
+    ),
+    true,
+  )
+  assert_eq(verr_text(s, "{ user(id: \"1\") { a: name b: email } }"), "")
+}
+
+///|
+/// §5.3.2: the same field under one key must also be asked the same question —
+/// two `user` selections with different `id` arguments cannot answer as one.
+test "fields sharing a response key must have the same arguments" {
+  let s = rules_schema()
+  assert_eq(
+    verr_text(s, "{ x: user(id: \"1\") { name } x: user(id: \"2\") { name } }").contains(
+      "Fields 'x' conflict because they have differing arguments",
+    ),
+    true,
+  )
+  assert_eq(
+    verr_text(s, "{ x: user(id: \"1\") { name } x: user(id: \"1\") { name } }"),
+    "",
+  )
+}
+
+///|
+/// §5.3.2: the check reaches into sub-selections, where the conflicting keys sit
+/// one level below the ones that merge.
+test "sub-selections of merged fields must merge too" {
+  let s = rules_schema()
+  assert_eq(
+    verr_text(
+      s, "{ x: user(id: \"1\") { y: name } x: user(id: \"1\") { y: id } }",
+    ).contains(
+      "Fields 'x' conflict because subfields 'y' conflict because 'name' and 'id' are different fields",
+    ),
+    true,
+  )
+  assert_eq(
+    verr_text(
+      s, "{ x: user(id: \"1\") { y: name } x: user(id: \"1\") { z: id } }",
+    ),
+    "",
+  )
+}
+
+///|
+/// §5.8.5: a variable may only be used where its declared type fits. A nullable
+/// `String` cannot stand at an `ID!` argument; declaring the variable `ID!` can.
+test "a variable must fit the position it is used in" {
+  let s = rules_schema()
+  assert_eq(
+    verr_text(s, "query ($s: String) { user(id: $s) { name } }").contains(
+      "Variable '$s' of type 'String' used in position expecting type 'ID!'.",
+    ),
+    true,
+  )
+  assert_eq(verr_text(s, "query ($s: ID!) { user(id: $s) { name } }"), "")
+}
+
+///|
+/// §5.8.5: a nullable variable still reaches a non-null position when its own
+/// default supplies the value the position insists on.
+test "a variable default satisfies a non-null position" {
+  let s = rules_schema()
+  assert_eq(
+    verr_text(s, "query ($s: ID = \"1\") { user(id: $s) { name } }"),
+    "",
+  )
+  assert_eq(
+    verr_text(s, "query ($s: ID) { user(id: $s) { name } }").contains(
+      "Variable '$s' of type 'ID' used in position expecting type 'ID!'.",
+    ),
+    true,
+  )
+}
+
+///|
+/// §5.8.5 reaches the positions inside a spread fragment, which the fragment's own
+/// check cannot see — it runs before any operation has offered it variables.
+test "a variable must fit its position inside a spread fragment" {
+  let s = rules_schema()
+  assert_eq(
+    verr_text(
+      s, "query Q($s: String) { ...F } fragment F on Query { user(id: $s) { name } }",
+    ).contains(
+      "Variable '$s' of type 'String' used in position expecting type 'ID!'.",
+    ),
+    true,
+  )
+  assert_eq(
+    verr_text(
+      s, "query Q($s: ID!) { ...F } fragment F on Query { user(id: $s) { name } }",
+    ),
+    "",
+  )
+}
+
+///|
+/// §5.7.4: a directive's arguments are checked against its definition, so a
+/// misspelt `@skip(iff:)` is caught rather than silently ignored at execution.
+test "a directive argument must be declared" {
+  let s = rules_schema()
+  assert_eq(
+    verr_text(s, "{ hello @skip(iff: true) }").contains(
+      "Unknown argument 'iff' on directive '@skip'",
+    ),
+    true,
+  )
+  assert_eq(verr_text(s, "{ hello @skip(if: true) }"), "")
+}
+
+///|
+/// §5.7.4: `@skip` declares `if: Boolean!`, so a bare `@skip` is incomplete. It
+/// used to reach the executor, which read the missing argument as false.
+test "a directive must supply its required arguments" {
+  let s = rules_schema()
+  assert_eq(
+    verr_text(s, "{ hello @skip }").contains(
+      "Directive '@skip' is missing required argument 'if'",
+    ),
+    true,
+  )
+  assert_eq(verr_text(s, "{ hello @include(if: false) }"), "")
+}
+
+///|
 /// §5.8.3: a variable used inside a spread fragment must be defined by the
 /// operation that spreads it. Checking only the operation's own selections missed
 /// the common case, and the undefined variable then executed as null.

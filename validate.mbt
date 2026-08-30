@@ -8,10 +8,12 @@
 /// `execute` can report them all in one `{ errors }` response.
 
 ///|
-/// Validator state: the schema, the document's fragments, and the error list.
+/// Validator state: the schema, the document's fragments, the fragments that lie
+/// on a spread cycle, and the error list.
 priv struct Validator {
   schema : Schema
   fragments : Map[String, FragmentDefinition]
+  cyclic : Array[String]
   errors : Array[GqlError]
 }
 
@@ -62,20 +64,34 @@ fn Validator::err(self : Validator, message : String) -> Unit {
 }
 
 ///|
+/// The definition of `name` among an operation's variables, if it declares one.
+fn var_def(
+  vds : Array[VariableDefinition],
+  name : String,
+) -> VariableDefinition? {
+  for vd in vds {
+    if vd.variable == name {
+      return Some(vd)
+    }
+  }
+  None
+}
+
+///|
 /// Check every `$variable` referenced by a value is defined (when `defined` is
 /// `Some`; fragment bodies pass `None` since their variables come from the
 /// operation that spreads them).
 fn Validator::check_value_vars(
   self : Validator,
   v : Value,
-  defined : Array[String]?,
+  defined : Array[VariableDefinition]?,
 ) -> Unit {
   match defined {
     None => return
-    Some(names) =>
+    Some(vds) =>
       match v {
         Variable(n) =>
-          if not(str_in(names, n)) {
+          if var_def(vds, n) is None {
             self.err("Variable '$" + n + "' is not defined")
           }
         ListValue(items) =>
@@ -92,30 +108,13 @@ fn Validator::check_value_vars(
 }
 
 ///|
-/// The valid locations of the directive `name`: a built-in executable directive
+/// The definition of the directive `name`: a built-in executable directive
 /// (`@skip`/`@include`) or a user-registered one, else `None` for an undefined
 /// directive.
-fn Validator::directive_locations(
-  self : Validator,
-  name : String,
-) -> Array[String]? {
+fn Validator::directive_def(self : Validator, name : String) -> DirectiveDef? {
   match builtin_exec_directive(name) {
-    Some(locs) => Some(locs)
-    None =>
-      match self.schema.directive_def_by_name(name) {
-        Some(d) => Some(d.locations)
-        None => None
-      }
-  }
-}
-
-///|
-/// Whether the directive `name` is repeatable (may appear more than once at one
-/// location). Built-ins are not repeatable.
-fn Validator::directive_repeatable(self : Validator, name : String) -> Bool {
-  match self.schema.directive_def_by_name(name) {
-    Some(d) => d.is_repeatable
-    None => false
+    Some(d) => Some(d)
+    None => self.schema.directive_def_by_name(name)
   }
 }
 
@@ -139,35 +138,91 @@ fn Validator::check_arg_uniqueness(
 ///|
 /// Validate a directive list at type-system/executable `location`: every directive
 /// is defined (§5.7.1), used at an allowed location (§5.7.2), and — unless declared
-/// repeatable — appears at most once (§5.7.3); its arguments are unique (§5.4.2)
-/// and their variable references are defined.
+/// repeatable — appears at most once (§5.7.3); its arguments are unique (§5.4.2),
+/// declared and complete (§5.7.4), and their variable references are defined.
 fn Validator::check_directives(
   self : Validator,
   directives : Array[Directive],
-  defined : Array[String]?,
+  defined : Array[VariableDefinition]?,
   location : String,
 ) -> Unit {
   let seen : Array[String] = []
   for d in directives {
     self.check_arg_uniqueness(d.arguments, "@" + d.name)
-    for a in d.arguments {
-      self.check_value_vars(a.value, defined)
-    }
-    match self.directive_locations(d.name) {
-      None => self.err("Unknown directive '@" + d.name + "'")
-      Some(locs) =>
-        if not(str_in(locs, location)) {
+    match self.directive_def(d.name) {
+      None => {
+        self.err("Unknown directive '@" + d.name + "'")
+        for a in d.arguments {
+          self.check_value_vars(a.value, defined)
+        }
+      }
+      Some(def) => {
+        if not(str_in(def.locations, location)) {
           self.err("Directive '@" + d.name + "' may not be used on " + location)
         }
-    }
-    if str_in(seen, d.name) && not(self.directive_repeatable(d.name)) {
-      self.err(
-        "Directive '@" +
-        d.name +
-        "' can only be used once at this location (it is not repeatable)",
-      )
+        if str_in(seen, d.name) && not(def.is_repeatable) {
+          self.err(
+            "Directive '@" +
+            d.name +
+            "' can only be used once at this location (it is not repeatable)",
+          )
+        }
+        self.check_directive_args(d, def, defined)
+      }
     }
     seen.push(d.name)
+  }
+}
+
+///|
+/// Validate a directive's arguments against its definition (§5.4.1 Argument Names
+/// and §5.4.2.1 Required Arguments, at a directive rather than a field): every
+/// supplied argument is declared, its value fits the declared type, and every
+/// non-null argument is supplied. Without this `@skip(iff: true)` and a bare
+/// `@skip` both reached the executor, which then read a missing `if` as false.
+fn Validator::check_directive_args(
+  self : Validator,
+  d : Directive,
+  def : DirectiveDef,
+  defined : Array[VariableDefinition]?,
+) -> Unit {
+  let owner = "directive '@" + d.name + "'"
+  for a in d.arguments {
+    self.check_value_vars(a.value, defined)
+    let mut declared = false
+    for da in def.args {
+      if da.0 == a.name {
+        declared = true
+        self.check_value_type(
+          a.value,
+          da.1,
+          "argument '" + a.name + "' of " + owner,
+        )
+        self.check_var_usage(a.value, da.1, false, defined)
+      }
+    }
+    if not(declared) {
+      self.err("Unknown argument '" + a.name + "' on " + owner)
+    }
+  }
+  for da in def.args {
+    if da.1 is NonNull(_) {
+      let mut supplied = false
+      for a in d.arguments {
+        if a.name == da.0 {
+          supplied = true
+        }
+      }
+      if not(supplied) {
+        self.err(
+          "Directive '@" +
+          d.name +
+          "' is missing required argument '" +
+          da.0 +
+          "'",
+        )
+      }
+    }
   }
 }
 
@@ -179,7 +234,7 @@ fn Validator::check_field_args(
   self : Validator,
   field : QueryField,
   fdef : Field,
-  defined : Array[String]?,
+  defined : Array[VariableDefinition]?,
 ) -> Unit {
   self.check_arg_uniqueness(field.arguments, field.name)
   let declared : Array[String] = []
@@ -198,6 +253,12 @@ fn Validator::check_field_args(
             a.value,
             da.1,
             "argument '" + a.name + "' of field '" + field.name + "'",
+          )
+          self.check_var_usage(
+            a.value,
+            da.1,
+            fdef.arg_defaults.get(a.name) is Some(_),
+            defined,
           )
         }
       }
@@ -252,6 +313,104 @@ fn typeref_to_gql(t : TypeRef) -> GqlType {
     NamedType(n) => Named(n)
     ListType(inner) => ListOf(typeref_to_gql(inner))
     NonNullType(inner) => NonNull(typeref_to_gql(inner))
+  }
+}
+
+///|
+/// AreTypesCompatible (spec §5.8.5): whether a value of `vt` may stand where `lt`
+/// is expected. A non-null location demands a non-null variable; a list location
+/// demands a list variable, item by item; named types must be the same type, with
+/// no scalar coercion (an `Int!` variable does not fit an `ID!` argument).
+fn types_compatible(vt : GqlType, lt : GqlType) -> Bool {
+  match (vt, lt) {
+    (NonNull(vi), NonNull(li)) => types_compatible(vi, li)
+    (_, NonNull(_)) => false
+    (NonNull(vi), _) => types_compatible(vi, lt)
+    (ListOf(vi), ListOf(li)) => types_compatible(vi, li)
+    (ListOf(_), _) | (_, ListOf(_)) => false
+    _ => vt.named_base() == lt.named_base()
+  }
+}
+
+///|
+/// AllVariableUsagesAreAllowed (spec §5.8.5): a variable may only appear where its
+/// declared type fits the input position. A nullable variable still fits a non-null
+/// position when something supplies the missing value — a non-null variable default
+/// or a default on the location itself — so `$s` below is allowed only in the
+/// second query:
+///
+/// ```graphql
+/// query ($s: ID)       { user(id: $s) { name } }   # id: ID! — rejected
+/// query ($s: ID = "1") { user(id: $s) { name } }   # the default fills the gap
+/// ```
+///
+/// `v` may be a literal wrapping the variable, so list entries and input-object
+/// fields are followed to the position the variable actually occupies. Nothing
+/// happens for a fragment body (`defined` is `None`) or for a variable the
+/// operation never declared, which §5.8.3 reports instead.
+fn Validator::check_var_usage(
+  self : Validator,
+  v : Value,
+  loc : GqlType,
+  loc_default : Bool,
+  defined : Array[VariableDefinition]?,
+) -> Unit {
+  let vds = match defined {
+    Some(x) => x
+    None => return
+  }
+  match v {
+    Variable(n) =>
+      match var_def(vds, n) {
+        None => ()
+        Some(vd) => {
+          let vt = typeref_to_gql(vd.typ)
+          let ok = match loc {
+            NonNull(inner) if not(vt is NonNull(_)) =>
+              (
+                loc_default ||
+                (match vd.default_value {
+                  None | Some(NullValue) => false
+                  Some(_) => true
+                })
+              ) &&
+              types_compatible(vt, inner)
+            _ => types_compatible(vt, loc)
+          }
+          if not(ok) {
+            self.err(
+              "Variable '$" +
+              vd.variable +
+              "' of type '" +
+              vd.typ.to_query() +
+              "' used in position expecting type '" +
+              type_sdl(loc) +
+              "'.",
+            )
+          }
+        }
+      }
+    ListValue(items) => {
+      let item = match loc {
+        NonNull(ListOf(i)) | ListOf(i) => i
+        _ => loc
+      }
+      for it in items {
+        self.check_var_usage(it, item, false, defined)
+      }
+    }
+    ObjectValue(fields) =>
+      match self.schema.type_by_name(loc.named_base()) {
+        Some(td) =>
+          for kv in fields {
+            match td.field_by_name(kv.0) {
+              Some(fd) => self.check_var_usage(kv.1, fd.typ, false, defined)
+              None => ()
+            }
+          }
+        None => ()
+      }
+    _ => ()
   }
 }
 
@@ -448,7 +607,7 @@ fn Validator::check_selection_set(
   self : Validator,
   type_name : String,
   selections : Array[Selection],
-  defined : Array[String]?,
+  defined : Array[VariableDefinition]?,
 ) -> Unit {
   match self.schema.union_by_name(type_name) {
     Some(u) => {
@@ -457,6 +616,7 @@ fn Validator::check_selection_set(
     }
     None => ()
   }
+  self.check_can_merge(type_name, selections)
   let obj = match self.lookup_type(type_name) {
     Some(o) => o
     None => {
@@ -594,8 +754,9 @@ fn Validator::check_union_selection_set(
   union_name : String,
   u : UnionType,
   selections : Array[Selection],
-  defined : Array[String]?,
+  defined : Array[VariableDefinition]?,
 ) -> Unit {
+  self.check_can_merge(union_name, selections)
   for sel in selections {
     match sel {
       FieldSel(f) => {
@@ -731,13 +892,13 @@ fn Validator::check_operation(
     Subscription => "SUBSCRIPTION"
   }
   self.check_directives(op.directives, None, op_location)
-  let defined : Array[String] = []
+  let defined : Array[VariableDefinition] = []
   for vd in op.variable_definitions {
     // §5.8.1 Variable Uniqueness: a variable name is defined at most once.
-    if str_in(defined, vd.variable) {
+    if var_def(defined, vd.variable) is Some(_) {
       self.err("Duplicate variable '$" + vd.variable + "'")
     }
-    defined.push(vd.variable)
+    defined.push(vd)
     self.check_directives(vd.directives, Some(defined), "VARIABLE_DEFINITION")
     let base = typeref_base(vd.typ)
     // §5.8.2 Variables Are Input Types: a variable's type must be a scalar, enum,
@@ -778,6 +939,7 @@ fn Validator::check_operation(
     self.check_single_root_field(op)
   }
   self.check_selection_set(root_type, op.selection_set, Some(defined))
+  self.check_spread_var_usages(root_type, op.selection_set, defined, false, [])
   // §5.8.4 All Variables Used: every defined variable is referenced somewhere in
   // the operation (directly or through a spread fragment).
   let used : Array[String] = []
@@ -791,7 +953,7 @@ fn Validator::check_operation(
   // the operation's own selections misses the common case — a variable referenced
   // inside a fragment the operation spreads — which then executed as null.
   for name in used {
-    if not(str_in(defined, name)) {
+    if var_def(defined, name) is None {
       self.err(
         "Variable '$" +
         name +
@@ -802,6 +964,114 @@ fn Validator::check_operation(
         }) +
         "'",
       )
+    }
+  }
+}
+
+///|
+/// §5.8.5 for the argument positions inside the fragments an operation spreads. A
+/// fragment is validated on its own, where nothing knows which operation's
+/// variables it will be handed, so its positions are checked here instead — once
+/// per operation that can reach it. `inside` starts false because the operation's
+/// own arguments were already checked as the selection set was validated; it turns
+/// true on entering a fragment body.
+fn Validator::check_spread_var_usages(
+  self : Validator,
+  type_name : String,
+  selections : Array[Selection],
+  vars : Array[VariableDefinition],
+  inside : Bool,
+  seen : Array[String],
+) -> Unit {
+  for sel in selections {
+    match sel {
+      FieldSel(f) => {
+        if inside {
+          self.check_directive_var_usages(f.directives, vars)
+        }
+        let fdef = match self.lookup_type(type_name) {
+          Some(t) => t.field_by_name(f.name)
+          None => None
+        }
+        match fdef {
+          None => ()
+          Some(fd) => {
+            if inside {
+              for a in f.arguments {
+                for da in fd.args {
+                  if da.0 == a.name {
+                    self.check_var_usage(
+                      a.value,
+                      da.1,
+                      fd.arg_defaults.get(a.name) is Some(_),
+                      Some(vars),
+                    )
+                  }
+                }
+              }
+            }
+            self.check_spread_var_usages(
+              fd.typ.named_base(),
+              f.selection_set,
+              vars,
+              inside,
+              seen,
+            )
+          }
+        }
+      }
+      InlineFragmentSel(cond, dirs, sels) => {
+        if inside {
+          self.check_directive_var_usages(dirs, vars)
+        }
+        let inner = match cond {
+          Some(c) => c
+          None => type_name
+        }
+        self.check_spread_var_usages(inner, sels, vars, inside, seen)
+      }
+      FragmentSpreadSel(name, dirs) => {
+        if inside {
+          self.check_directive_var_usages(dirs, vars)
+        }
+        if not(str_in(seen, name)) && not(str_in(self.cyclic, name)) {
+          seen.push(name)
+          match self.fragments.get(name) {
+            Some(fr) =>
+              self.check_spread_var_usages(
+                fr.type_condition,
+                fr.selection_set,
+                vars,
+                true,
+                seen,
+              )
+            None => ()
+          }
+        }
+      }
+    }
+  }
+}
+
+///|
+/// §5.8.5 for the arguments of a directive list, against the declared argument
+/// types of each directive.
+fn Validator::check_directive_var_usages(
+  self : Validator,
+  directives : Array[Directive],
+  vars : Array[VariableDefinition],
+) -> Unit {
+  for d in directives {
+    match self.directive_def(d.name) {
+      None => ()
+      Some(def) =>
+        for a in d.arguments {
+          for da in def.args {
+            if da.0 == a.name {
+              self.check_var_usage(a.value, da.1, false, Some(vars))
+            }
+          }
+        }
     }
   }
 }
@@ -889,7 +1159,7 @@ fn Validator::check_fragment(
 /// Validate a whole document against `schema`, returning all errors found (an
 /// empty array means the document is valid and ready to execute).
 pub fn validate(schema : Schema, doc : Document) -> Array[GqlError] {
-  let v = { schema, fragments: collect_fragments(doc), errors: [], }
+  let v = { schema, fragments: collect_fragments(doc), cyclic: [], errors: [], }
   v.check_operation_names(doc)
   v.check_fragment_uniqueness(doc)
   v.check_fragment_cycles(doc)
